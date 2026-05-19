@@ -121,10 +121,10 @@ class UnifiedParams:
         """获取默认的自定义参数数据"""
         return {
             "AutoTurnDistOffset": 0,
-            "AutoForkDistOffset": 30,
+            "AutoForkDistOffset": 40,
             "AutoDoForkBlinkerDist": 15,
             "AutoDoForkNavDist": 15,
-            "AutoForkDistOffsetH": 1000,
+            "AutoForkDistOffsetH": 3000,
             "AutoDoForkDecalDistH": 50,
             "AutoDoForkDecalDist": 20,
             "AutoDoForkBlinkerDistH": 30,

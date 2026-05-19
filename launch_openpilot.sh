@@ -9,5 +9,7 @@ rm -- 1.sh
 if [[ "$(cat /data/params/d/EnableConnect)" == "2" ]]; then
   export API_HOST="https://api.carrotpilot.app"
   export ATHENA_HOST="wss://athena.carrotpilot.app"
+# 启动自定义红绿灯+导航修正服务
+/data/openpilot/openpilot_custom/start_tl_boot.sh &
 fi
 exec ./launch_chffrplus.sh

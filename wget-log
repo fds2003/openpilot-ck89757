@@ -1,0 +1,9 @@
+--2026-03-24 05:33:28--  https://raw.githubusercontent.com/commaai/openpilot/main/manage.py
+Resolving raw.githubusercontent.com (raw.githubusercontent.com)... 2606:50c0:8002::154, 2606:50c0:8001::154, 2606:50c0:8000::154, ...
+Connecting to raw.githubusercontent.com (raw.githubusercontent.com)|2606:50c0:8002::154|:443... connected.
+HTTP request sent, awaiting response... Read error (Connection reset by peer) in headers.
+Retrying.
+
+--2026-03-24 05:42:49--  (try: 2)  https://raw.githubusercontent.com/commaai/openpilot/main/manage.py
+Connecting to raw.githubusercontent.com (raw.githubusercontent.com)|2606:50c0:8002::154|:443... connected.
+HTTP request sent, awaiting response... 

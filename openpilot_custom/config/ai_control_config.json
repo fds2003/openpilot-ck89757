@@ -1,0 +1,15 @@
+{
+  "ai_speed_control": {
+    "enabled": true,
+    "message_interval": 2.0,
+    "confidence_threshold": 0.7,
+    "max_speed_adjustment": 5.0,
+    "min_speed": 5.0,
+    "log_level": "INFO"
+  },
+  "messaging": {
+    "topic": "logMessage",
+    "field": "custom",
+    "format": "json"
+  }
+}

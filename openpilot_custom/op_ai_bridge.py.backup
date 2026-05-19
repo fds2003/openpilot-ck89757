@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""
+OpenPilot AI桥接器
+"""
+
+import zmq
+import json
+import time
+import sys
+import os
+
+sys.path.append('/data/openpilot')
+
+try:
+    from selfdrive.messaging import PubMaster, SubMaster, MessagingManager
+    print("✅ 导入OpenPilot消息模块成功")
+except ImportError as e:
+    print(f"❌ 无法导入OpenPilot消息模块: {e}")
+    sys.exit(1)
+
+def main():
+    context = zmq.Context()
+    # 从AI数据桥接器接收
+    receiver = context.socket(zmq.SUB)
+    receiver.connect("tcp://localhost:5555")
+    receiver.setsockopt_string(zmq.SUBSCRIBE, "")
+    
+    # OpenPilot消息发布
+    pm = messaging.PubMaster(['aiSpeedData'])
+    
+    print("✅ OpenPilot AI桥接器已启动")
+    
+    while True:
+        try:
+            message = receiver.recv_string()
+            data = json.loads(message)
+            
+            if data.get("type") == "forwarded_ai_suggestion":
+                ai_speed = data.get("ai_speed", 0.0)
+                
+                # 发布到OpenPilot
+                msg = messaging.new_message('aiSpeedData', valid=True)
+                msg.aiSpeedData.speed = float(ai_speed)
+                msg.aiSpeedData.confidence = 0.9
+                msg.aiSpeedData.timestamp = int(time.time() * 1e9)
+                
+                pm.send('aiSpeedData', msg)
+                print(f"📤 转发AI建议到OpenPilot: {ai_speed}km/h")
+                
+        except Exception as e:
+            print(f"❌ 错误: {e}")
+            time.sleep(0.1)
+
+if __name__ == "__main__":
+    main()

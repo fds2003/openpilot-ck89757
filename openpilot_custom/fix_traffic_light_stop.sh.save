@@ -1,0 +1,21 @@
+#!/bin/bash
+set -e
+
+# 直接用绝对路径修改，不管当前在哪个目录
+sed -i 's/StoppingDecelRate = [0-9.]*/StoppingDecelRate = 0.75/' /data/openpilot/selfdrive/controls/lib/carrot_functions.py
+sed -i 's/ComfortBrake = [0-9.]*/ComfortBrake = 0.45/' /data/openpilot/selfdrive/controls/lib/carrot_functions.py
+sed -i 's/stop_line_buffer = [0-9.]*/stop_line_buffer = 2.0/' /data/openpilot/selfdrive/controls/li#!/bin/bash
+set -e
+
+# 强制切换到 openpilot 根目录（绝对路径，确保生效）
+cd /data/openpilot || { echo "❌ 切换目录失败！"; exit 1; }
+
+# 1. 修改停车减速参数（用绝对路径也能生效）
+sed -i 's/StoppingDecelRate = [0-9.]*/StoppingDecelRate = 0.75/' selfdrive/controls/lib/carrot_functions.py
+sed -i 's/ComfortBrake = [0-9.]*/ComfortBrake = 0.45/' selfdrive/controls/lib/carrot_functions.py
+
+# 2. 修改停止线预留距离
+sed -i 's/stop_line_buffer = [0-9.]*/stop_line_buffer = 2.0/' selfdrive/controls/lib/longitudinal_planner.py
+
+echo "✅ 红绿灯停车参数已优化完成！"
+echo "推荐：StoppingDecelRate=0.75 | ComfortBrake=0.45 | stop_line_buffer=2.0"

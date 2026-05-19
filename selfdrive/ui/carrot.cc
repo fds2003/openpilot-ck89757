@@ -782,20 +782,22 @@ public:
         char str[128];
         int disp_y = y + 195;// 175;
         bool draw_dist = false;
-        float disp_size = 50;
+        float disp_size = 80;
         if (softHoldActive || brakeHoldActive || carrotCruise) {
-            sprintf(str, "%s", (brakeHoldActive) ? "AUTOHOLD" : (softHoldActive) ? "SOFTHOLD": "CARROT");
+            sprintf(str, "%s", (brakeHoldActive) ? "自动驻车" : (softHoldActive) ? "舒适驻车": "CARROT");
             ui_draw_text(s, x, disp_y, str, disp_size, COLOR_WHITE, BOLD);
         }
         else if (longActive) {
             if (xState == 3 || xState == 5) {      //XState.e2eStop, XState.e2eStopped
+                // 👇 替换 792-797 行的这段代码
                 if (v_ego < 1.0) {
-                    sprintf(str, "%s", (trafficState >= 1000) ? tr("Signal Error").toStdString().c_str(): tr("Signal Ready").toStdString().c_str());
-                    ui_draw_text(s, x, disp_y, str, disp_size, COLOR_WHITE, BOLD);
-                }
-                else {
-                    ui_draw_text(s, x, disp_y, tr("Signal slowing").toStdString().c_str(), disp_size, COLOR_WHITE, BOLD);
-                }
+                // 保留原三元逻辑：异常显示“信号异常”，正常显示“停车等待”
+                    sprintf(str, "%s", (trafficState >= 1000) ? "信号异常" : "停车等待");
+                // 加上完整的白边参数
+                ui_draw_text(s, x, disp_y, str, 80, COLOR_WHITE, BOLD, 4.0, 0.0, COLOR_BLACK);
+} else {
+    ui_draw_text(s, x, disp_y, "车辆减速", 80, COLOR_WHITE, BOLD, 4.0, 0.0, COLOR_BLACK);
+}
 #if 0
                 else if (getStopDist() > 0.5) {
                     float dist = getStopDist() * (s->scene.is_metric ? 1 : METER_TO_FOOT);
@@ -3214,9 +3216,72 @@ void ui_draw(UIState *s, ModelRenderer* model_renderer, int w, int h) {
     drawCarrot.drawRadarInfo(s);
 
   drawCarrot.drawHud(s);
+  // --- 右侧红绿灯（逻辑不变，只换漂亮绘制）---
+  NVGcontext* vg = s->vg;
+  float x = 1940.0f;
+  float y = 450.0f;
+  float icon_size = 120.0f;
 
+  // ======================
+  // 逻辑完全用你原来的，不动！
+  // ======================
+  bool red_light = drawCarrot.trafficState == 1 || drawCarrot.trafficState_carrot == 1;
+  bool green_light = drawCarrot.trafficState == 2 || drawCarrot.trafficState_carrot == 2;
+
+  // 黑底白边（保留你原来样式）
+  nvgBeginPath(vg);
+  nvgRoundedRect(vg, x, y, icon_size, icon_size*1.8, 16.0f);
+  nvgFillColor(vg, nvgRGBA(30, 30, 30, 255));
+  nvgFill(vg);
+  nvgBeginPath(vg);
+  nvgRoundedRect(vg, x, y, icon_size, icon_size*1.8, 16.0f);
+  nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 255));
+  nvgStrokeWidth(vg, 3.0f);
+  nvgStroke(vg);
+
+  // ======================
+  // 只换这里：纯绘制，不碰逻辑
+  // 绝对不会乱码、不会错位
+  // ======================
+  float cx = x + icon_size * 0.5f;
+  float ry1 = y + icon_size * 0.9f * 0.5f;
+  float ry2 = y + icon_size * 0.9f + icon_size * 0.9f * 0.5f;
+  float r = 28.0f;
+
+  // 红灯
+  if (red_light) {
+  nvgBeginPath(vg);
+  nvgCircle(vg, cx, ry1, r);
+  nvgFillColor(vg, nvgRGBA(255,0,0,255));
+  nvgFill(vg);
+} else {
+  nvgBeginPath(vg);
+  nvgCircle(vg, cx, ry1, r);
+  nvgFillColor(vg, nvgRGBA(80,80,80,255));
+  nvgFill(vg);
+}
+
+  // 绿灯
+  if (green_light) {
+    nvgBeginPath(vg);
+    nvgCircle(vg, cx, ry2, r);
+    nvgFillColor(vg, nvgRGBA(0,255,0,255));
+    nvgFill(vg);
+  } else {
+    nvgBeginPath(vg);
+    nvgCircle(vg, cx, ry2, r);
+    nvgFillColor(vg, nvgRGBA(80,80,80,255));
+    nvgFill(vg);
+  }
+  // ============== 暴力测试：直接写死数字 888，黄色，超大号 ==============
+  nvgFontSize(vg, 150.0f);  // 字号拉满，绝对能看到
+  nvgFontFace(vg, "sans");
+  nvgFillColor(vg, nvgRGBA(255, 255, 0, 255));  // 亮黄色，最醒目
+  // 直接画在屏幕正中间，坐标(960, 540)，1080P屏幕正中心
+  nvgText(vg, 960.0f, 540.0f, "888", nullptr);
+  // ============== 测试代码结束 ==============
   drawCarrot.drawDebug(s);
-  drawCarrot.drawDateTime(s);
+  //drawCarrot.drawDateTime(s);
   //drawCarrot.drawConnInfo(s);
   drawCarrot.drawDeviceInfo(s);
   int show_tpms = params.getInt("ShowTpms");

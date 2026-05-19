@@ -1,0 +1,1 @@
+/data/openpilot/openpilot_custom/start_tl_boot.sh
