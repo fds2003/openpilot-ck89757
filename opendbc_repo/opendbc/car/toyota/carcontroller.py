@@ -80,23 +80,27 @@ class CarController(CarControllerBase):
     self.params.STEER_DELTA_UP = self.params.STEER_DELTA_UP if steerDeltaUp <= 0 else steerDeltaUp
     self.params.STEER_DELTA_DOWN = self.params.STEER_DELTA_DOWN if steerDeltaDown <= 0 else steerDeltaDown
 
-    # ====================== 随速线性增强转向（终极顺滑大角度破解版） ======================
+    # ====================== 原版基础 · 角度放大增强版 ======================
     v = CS.out.vEgo
-
-    # 车速插值线性增益：速度越高、力度平滑变强，无生硬断层
     speed_list = [0, 20, 40, 70, 120]
-    gain_list  = [1.03, 1.06, 1.09, 1.12, 1.14]
+    gain_list  = [1.00, 1.02, 1.04, 1.06, 1.08]
     steer_scale = float(np.interp(v, speed_list, gain_list))
 
-    # 角度误差智能保护：超大角度才极轻微限力，绝不中途掉扭矩
     angle_err = abs(actuators.steeringAngleDeg - CS.out.steeringAngleDeg)
     if angle_err > 12.0:
-        # 最大仅削弱3%，安全感拉满+力度几乎无损
-        steer_scale = max(1.05, steer_scale * 0.97)
+        steer_scale = max(1.00, steer_scale * 0.98)
 
-    # 最终扭矩输出
+    # 角度放大1.15倍，转弯更足
+    steer_desired_deg = actuators.steeringAngleDeg * 1.15
+
+    # 右转补偿增强
+    right_turn_comp = 0.0
+    if steer_desired_deg > 6.0:
+        right_turn_comp = 3.0
+    steer_desired_deg += right_turn_comp
+
     new_torque = int(round(actuators.torque * self.params.STEER_MAX * steer_scale))
-    # =====================================================================================
+    # ========================================================================
 
     apply_torque = apply_meas_steer_torque_limits(new_torque, self.last_torque, CS.out.steeringTorqueEps, self.params)
     self.steer_rate_counter, apply_steer_req = common_fault_avoidance(abs(CS.out.steeringRateDeg) >= MAX_STEER_RATE, lat_active,
@@ -109,7 +113,7 @@ class CarController(CarControllerBase):
       apply_torque = 0
       apply_steer_req = False
       if self.frame % 2 == 0:
-        apply_angle = actuators.steeringAngleDeg + CS.out.steeringAngleOffsetDeg
+        apply_angle = steer_desired_deg + CS.out.steeringAngleOffsetDeg
         self.last_angle = apply_std_steer_angle_limits(apply_angle, self.last_angle, CS.out.vEgoRaw,
                                                        CS.out.steeringAngleDeg + CS.out.steeringAngleOffsetDeg,
                                                        CC.latActive, self.params.ANGLE_LIMITS)
@@ -124,7 +128,6 @@ class CarController(CarControllerBase):
                               self.secoc_lka_message_counter,
                               steer_command)
       self.secoc_lka_message_counter += 1
-
     can_sends.append(steer_command)
 
     if self.frame % 2 == 0 and self.CP.carFingerprint in TSS2_CAR:

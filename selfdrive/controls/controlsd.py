@@ -24,7 +24,6 @@ from selfdrive.modeld.modeld import LAT_SMOOTH_SECONDS
 State = log.SelfdriveState.OpenpilotState
 LaneChangeState = log.LaneChangeState
 LaneChangeDirection = log.LaneChangeDirection
-
 ACTUATOR_FIELDS = tuple(car.CarControl.Actuators.schema.fields.keys())
 
 class Controls:
@@ -63,18 +62,15 @@ class Controls:
 
   def state_control(self):
     CS = self.sm['carState']
-    # Update VehicleModel
     lp = self.sm['liveParameters']
     x = max(lp.stiffnessFactor, 0.1)
     sr = max(lp.steerRatio, 0.1) * self.params.get_float("SteerRatioRate") / 100.0
     custom_sr = self.params.get_float("CustomSR") / 10.0
     sr = max(custom_sr if custom_sr > 1.0 else sr, 0.1)
     self.VM.update_params(x, sr)
-
     steer_angle_without_offset = math.radians(CS.steeringAngleDeg - lp.angleOffsetDeg)
     self.curvature = -self.VM.calc_curvature(steer_angle_without_offset, CS.vEgo, lp.roll)
 
-    # Update Torque Params
     if self.CP.lateralTuning.which() == 'torque':
       torque_params = self.sm['liveTorqueParameters']
       if self.sm.all_checks(['liveTorqueParameters']) and torque_params.useParams:
@@ -86,20 +82,20 @@ class Controls:
     CC = car.CarControl.new_message()
     CC.enabled = self.sm['selfdriveState'].enabled
 
-    # carrot
     gear = car.CarState.GearShifter
     driving_gear = CS.gearShifter not in (gear.neutral, gear.park, gear.reverse, gear.unknown)
     lateral_enabled = driving_gear
-
     standstill = abs(CS.vEgo) <= max(self.CP.minSteerSpeed, MIN_LATERAL_CONTROL_SPEED) or CS.standstill
     CC.latActive = ((self.sm['selfdriveState'].active or lateral_enabled) and CS.latEnabled and
                     not CS.steerFaultTemporary and not CS.steerFaultPermanent and not standstill)
     CC.longActive = CC.enabled and not any(e.overrideLongitudinal for e in self.sm['onroadEvents']) and self.CP.openpilotLongitudinalControl
 
+    # ===================== 强制开启障碍物避让，不受ACC、自动油门状态限制 =====================
+    self.allow_obstacle_avoid = True
+
     actuators = CC.actuators
     actuators.longControlState = self.LoC.long_control_state
 
-    # Enable blinkers while lane changing
     if model_v2.meta.laneChangeState != LaneChangeState.off:
       CC.leftBlinker = model_v2.meta.laneChangeDirection == LaneChangeDirection.left
       CC.rightBlinker = model_v2.meta.laneChangeDirection == LaneChangeDirection.right
@@ -109,7 +105,6 @@ class Controls:
     if not CC.longActive:
       self.LoC.reset()
 
-    # accel PID loop
     pid_accel_limits = self.CI.get_pid_accel_limits(self.CP, CS.vEgo, CS.vCruise * CV.KPH_TO_MS)
     t_since_plan = (self.sm.frame - self.sm.recv_frame['longitudinalPlan']) * DT_CTRL
     accel, aTarget, jerk = self.LoC.update(CC.longActive, CS, long_plan, pid_accel_limits, t_since_plan, self.sm['radarState'])
@@ -117,7 +112,6 @@ class Controls:
     actuators.aTarget = float(aTarget)
     actuators.jerk = float(jerk)
 
-    # Steering PID loop and lateral MPC
     lat_plan = self.sm['lateralPlan']
     curve_speed_abs = abs(self.sm['carrotMan'].vTurnSpeed)
     self.lanefull_mode_enabled = (lat_plan.useLaneLines and curve_speed_abs > self.params.get_int("UseLaneLineCurveSpeed"))
@@ -146,15 +140,12 @@ class Controls:
     else:
       new_desired_curvature = model_v2.action.desiredCurvature
 
-    # ====================== 卡罗拉专用低速转向曲率修正 已嵌入 ======================
-    if CS.vEgo < 11.1:  # 40 km/h 以下生效
+    if CS.vEgo < 11.1:
         speed_factor = max(0.6, 0.6 + 0.4 * (CS.vEgo / 11.1))
         new_desired_curvature *= speed_factor
-    # ============================================================================
 
     self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
     actuators.curvature = float(self.desired_curvature)
-
     steer, steeringAngleDeg, lac_log = self.LaC.update(CC.latActive, CS, self.VM, lp,
                                                        self.steer_limited_by_controls, self.desired_curvature,
                                                        self.sm['liveLocationKalman'], curvature_limited,
@@ -163,7 +154,6 @@ class Controls:
     actuators.steeringAngleDeg = float(steeringAngleDeg)
     actuators.yStd = float(self.yStd)
 
-    # Ensure no NaNs/Infs
     for p in ACTUATOR_FIELDS:
       attr = getattr(actuators, p)
       if not isinstance(attr, SupportsFloat):
@@ -234,11 +224,11 @@ class Controls:
 
     if self.CP.pcmCruise:
       speed_from_pcm = self.params.get_int("SpeedFromPCM")
-      if speed_from_pcm == 1: #toyota
+      if speed_from_pcm == 1:
         hudControl.setSpeed = float(CS.vCruiseCluster * CV.KPH_TO_MS)
       elif speed_from_pcm == 2:
         hudControl.setSpeed = float(max(30/3.6, desired_kph * CV.KPH_TO_MS))
-      elif speed_from_pcm == 3: # honda
+      elif speed_from_pcm == 3:
         hudControl.setSpeed = setSpeed if lp.xState == 3 else float(desired_kph * CV.KPH_TO_MS)
       else:
         hudControl.setSpeed = float(max(30/3.6, setSpeed))

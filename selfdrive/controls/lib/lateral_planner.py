@@ -89,7 +89,6 @@ class LateralPlanner:
       self.v_plan = np.clip(car_speed, MIN_SPEED, np.inf)
       self.v_ego = self.v_plan[0]
       self.plan_a = np.array(md.acceleration.x)
-
       if md.velocity.x[-1] < md.velocity.x[0] * 0.7:
         self.lanemode_possible_count = 0
         self.laneless_only = True
@@ -100,8 +99,6 @@ class LateralPlanner:
 
     self.LP.parse_model(md)
 
-    # ====================== 轻微优化，不触发故障 ======================
-    # 低速保持原厂，不做任何激进规划
     if self.v_ego < 18:
         self.useLaneLineMode = False
     else:
@@ -109,7 +106,13 @@ class LateralPlanner:
           self.useLaneLineMode = False
         else:
           self.useLaneLineMode = True
-    # =================================================================
+
+    curvature = measured_curvature
+    if curvature > 0.0:
+        curvature *= np.interp(self.v_ego, [3.0, 5.0, 8.0], [1.0, 0.90, 0.80])
+    if curvature > 0.025:
+        curvature = 0.025
+    self.LP.curvature = curvature
 
     if md.meta.desire != log.Desire.none or carrot.atc_active:
       self.LP.lane_change_multiplier = 0.0
@@ -119,7 +122,7 @@ class LateralPlanner:
     self.LP.lanefull_mode = self.useLaneLineMode
     self.LP.lane_width_left = md.meta.laneWidthLeft
     self.LP.lane_width_right = md.meta.laneWidthRight
-    self.LP.curvature = measured_curvature
+    self.LP.curvature = curvature
 
     self.path_xyz, self.lanelines_active = self.LP.get_d_path(sm['carState'], self.v_ego, self.t_idxs, self.path_xyz, self.curve_speed)
     self.path_xyz[:, 1] += self.pathOffset
@@ -127,7 +130,6 @@ class LateralPlanner:
     self.lat_mpc.set_weights(self.lateralPathCost, self.lateralMotionCost,
                              LATERAL_ACCEL_COST, LATERAL_JERK_COST,
                              STEERING_RATE_COST)
-
     y_pts = self.path_xyz[:LAT_MPC_N+1, 1]
     heading_pts = self.plan_yaw[:LAT_MPC_N+1]
     yaw_rate_pts = self.plan_yaw_rate[:LAT_MPC_N+1]
@@ -158,41 +160,32 @@ class LateralPlanner:
     plan_solution_valid = self.solution_invalid_cnt < 2
     plan_send = messaging.new_message('lateralPlan')
     plan_send.valid = sm.all_checks(service_list=['carState', 'controlsState', 'modelV2'])
-
     lateralPlan = plan_send.lateralPlan
     lateralPlan.modelMonoTime = sm.logMonoTime['modelV2']
     lateralPlan.dPathPoints = self.y_pts.tolist()
     lateralPlan.psis = self.lat_mpc.x_sol[0:CONTROL_N, 2].tolist()
     lateralPlan.distances = self.lat_mpc.x_sol[0:CONTROL_N, 0].tolist()
-
     if len(self.v_plan) == TRAJECTORY_SIZE:
       lateralPlan.curvatures = (self.lat_mpc.x_sol[0:CONTROL_N, 3] / self.v_plan[0:CONTROL_N]).tolist()
     else:
       lateralPlan.curvatures = (self.lat_mpc.x_sol[0:CONTROL_N, 3] / self.v_ego).tolist()
-
     lateralPlan.curvatureRates = [float(x.item() / self.v_ego) for x in self.lat_mpc.u_sol[0:CONTROL_N - 1]] + [0.0]
     lateralPlan.mpcSolutionValid = bool(plan_solution_valid)
     lateralPlan.solverExecutionTime = self.lat_mpc.solve_time
-
     if self.debug_mode:
       lateralPlan.solverCost = self.lat_mpc.cost
       lateralPlan.solverState = log.LateralPlan.SolverState.new_message()
       lateralPlan.solverState.x = self.lat_mpc.x_sol.tolist()
       lateralPlan.solverState.u = self.lat_mpc.u_sol.flatten().tolist()
-
     lateralPlan.useLaneLines = self.lanelines_active
     lateralPlan.laneWidth = float(self.LP.lane_width)
     lateralPlan.position.x = self.x_sol[:, 0].tolist()
     lateralPlan.position.y = self.x_sol[:, 1].tolist()
     lateralPlan.position.z = self.path_xyz[:, 2].tolist()
-
     debugText = (
       f"{'lanemode' if self.lanelines_active else 'laneless'} | " +
-      f"{self.LP.lane_width_left:.1f}m | " +
-      f"{self.LP.lane_width:.1f}m | " +
-      f"{self.LP.lane_width_right:.1f}m | " +
-      f"offset={self.LP.offset_total * 100.0:.1f}cm turn={np.clip(self.curve_speed, -200, 200):.0f}km/h"
+      f"{self.LP.lane_width_left:.1f}m | {self.LP.lane_width:.1f}m | {self.LP.lane_width_right:.1f}m | " +
+      f"offset={self.LP.offset_total * 100:.1f}cm turn={np.clip(self.curve_speed, -200, 200):.0f}km/h"
     )
     lateralPlan.latDebugText = debugText
-
     pm.send('lateralPlan', plan_send)

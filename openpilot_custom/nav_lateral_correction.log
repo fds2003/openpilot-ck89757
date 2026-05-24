@@ -1,4 +1,8 @@
+✅ 导航防提前转弯（安全版）启动
 Traceback (most recent call last):
-  File "/data/openpilot/openpilot_custom/nav_lateral_correction.py", line 2, in <module>
-    import cereal.messaging as messaging
-ModuleNotFoundError: No module named 'cereal'
+  File "/data/openpilot/openpilot_custom/nav_lateral_correction.py", line 45, in <module>
+    n.run()
+  File "/data/openpilot/openpilot_custom/nav_lateral_correction.py", line 16, in run
+    nav = self.sm.get('navInstruction', None)
+          ^^^^^^^^^^^
+AttributeError: 'SubMaster' object has no attribute 'get'
