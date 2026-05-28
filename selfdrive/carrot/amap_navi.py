@@ -1,6 +1,10 @@
 import json
 import time
 import threading
+...
+import json
+import time
+import threading
 import socket
 import fcntl
 import struct
@@ -12,6 +16,9 @@ from openpilot.common.realtime import Ratekeeper
 from openpilot.system.hardware import PC
 from openpilot.selfdrive.carrot.config import UnifiedParams
 
+# 导航状态（仅给过弯优化用，不影响任何功能）
+NAV_ACTIVE = False
+NAV_LAST_UPDATE = 0.0
 BLINKER_NONE = 0
 BLINKER_LEFT = 1
 BLINKER_RIGHT = 2
@@ -222,6 +229,10 @@ class AmapNaviServ:
     self.dynamicBlindRange = 0
     self.dynamicBlindDistance = 0
     self.atc_flag = False
+    # 更新导航状态（过弯优化用）
+    global NAV_ACTIVE, NAV_LAST_UPDATE
+    NAV_ACTIVE = self.atc_flag
+    NAV_LAST_UPDATE = time.time()
     self.lf_object_detected_count = 0
     self.lb_object_detected_count = 0
     self.rf_object_detected_count = 0
