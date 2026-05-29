@@ -48,7 +48,6 @@ class LateralPlanner:
     self.factor2 = (CP.centerToFront * CP.mass) / (CP.wheelbase * CP.tireStiffnessRear)
     self.last_cloudlog_t = 0
     self.solution_invalid_cnt = 0
-
     self.path_xyz = np.zeros((TRAJECTORY_SIZE, 3))
     self.velocity_xyz = np.zeros((TRAJECTORY_SIZE, 3))
     self.v_plan = np.zeros((TRAJECTORY_SIZE,))
@@ -57,7 +56,6 @@ class LateralPlanner:
     self.l_lane_change_prob = 0.0
     self.r_lane_change_prob = 0.0
     self.debug_mode = debug
-
     self.params = Params()
     self.latDebugText = ""
     self.LP = LanePlanner()
@@ -67,14 +65,12 @@ class LateralPlanner:
     self.useLaneLineSpeedApply = self.params.get_int("UseLaneLineSpeed")
     self.pathOffset = float(self.params.get_int("PathOffset")) * 0.01
     self.useLaneLineMode = False
-
     self.plan_a = np.zeros((TRAJECTORY_SIZE, ))
     self.plan_yaw = np.zeros((TRAJECTORY_SIZE,))
     self.plan_yaw_rate = np.zeros((TRAJECTORY_SIZE,))
     self.t_idxs = np.arange(TRAJECTORY_SIZE)
     self.y_pts = np.zeros((TRAJECTORY_SIZE,))
     self.d_path_w_lines_xyz = np.zeros((TRAJECTORY_SIZE, 3))
-
     self.lat_mpc = LateralMpc()
     self.reset_mpc(np.zeros(4))
     self.curve_speed = 0
@@ -129,7 +125,6 @@ class LateralPlanner:
       self.v_plan = np.clip(car_speed, MIN_SPEED, np.inf)
       self.v_ego = self.v_plan[0]
       self.plan_a = np.array(md.acceleration.x)
-
       if md.velocity.x[-1] < md.velocity.x[0] * 0.7:
         self.lanemode_possible_count = 0
         self.laneless_only = True
@@ -165,6 +160,11 @@ class LateralPlanner:
     self.LP.lane_width_left = md.meta.laneWidthLeft
     self.LP.lane_width_right = md.meta.laneWidthRight
     self.LP.curvature = curvature
+
+    # ================ 右转增强：低曲率右转不被判定为直行 ================
+    if 0.0006 < abs(curvature) < 0.0015 and self.v_ego < 25:
+        curvature = np.sign(curvature) * 0.0018
+    # ================================================================
 
     self.path_xyz, self.lanelines_active = self.LP.get_d_path(sm['carState'], self.v_ego, self.t_idxs, self.path_xyz, self.curve_speed)
     self.path_xyz[:, 1] += self.pathOffset
@@ -237,4 +237,5 @@ class LateralPlanner:
       f"offset={self.LP.offset_total * 100:.1f}cm turn={np.clip(self.curve_speed, -200, 200):.0f}km/h"
     )
     lateralPlan.latDebugText = debugText
+
     pm.send('lateralPlan', plan_send)

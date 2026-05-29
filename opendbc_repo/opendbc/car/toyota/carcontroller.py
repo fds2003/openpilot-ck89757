@@ -80,27 +80,25 @@ class CarController(CarControllerBase):
     self.params.STEER_DELTA_UP = self.params.STEER_DELTA_UP if steerDeltaUp <= 0 else steerDeltaUp
     self.params.STEER_DELTA_DOWN = self.params.STEER_DELTA_DOWN if steerDeltaDown <= 0 else steerDeltaDown
 
-    # ====================== 原版基础 · 角度放大增强版 ======================
+    # ====================== 优化版·卡罗拉专用 ======================
     v = CS.out.vEgo
-    speed_list = [0, 20, 40, 70, 120]
-    gain_list  = [1.00, 1.02, 1.04, 1.06, 1.08]
+    speed_list = [0, 15, 30, 50, 100]
+    gain_list  = [1.15, 1.12, 1.08, 1.05, 1.03]
     steer_scale = float(np.interp(v, speed_list, gain_list))
 
     angle_err = abs(actuators.steeringAngleDeg - CS.out.steeringAngleDeg)
-    if angle_err > 12.0:
-        steer_scale = max(1.00, steer_scale * 0.98)
+    if angle_err > 8.0:
+        steer_scale *= 1.08
 
-    # 角度放大1.15倍，转弯更足
-    steer_desired_deg = actuators.steeringAngleDeg * 1.15
+    steer_desired_deg = actuators.steeringAngleDeg * 1.18
 
-    # 右转补偿增强
     right_turn_comp = 0.0
-    if steer_desired_deg > 6.0:
-        right_turn_comp = 3.0
+    if steer_desired_deg > 4.0:
+        right_turn_comp = 2.5
     steer_desired_deg += right_turn_comp
 
     new_torque = int(round(actuators.torque * self.params.STEER_MAX * steer_scale))
-    # ========================================================================
+    # =================================================================
 
     apply_torque = apply_meas_steer_torque_limits(new_torque, self.last_torque, CS.out.steeringTorqueEps, self.params)
     self.steer_rate_counter, apply_steer_req = common_fault_avoidance(abs(CS.out.steeringRateDeg) >= MAX_STEER_RATE, lat_active,

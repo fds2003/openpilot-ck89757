@@ -30,74 +30,70 @@ lock = threading.Lock()
 data_queue = queue.Queue()
 
 class RadarSpeedEstimator:
-  """
-  升级版鲁棒跳变过滤器（单位：mm 输入 / ms 时间戳，输出 m/s）
-  """
+    """
+    升级版鲁棒跳变过滤器 防断通讯稳定版
+    适配openpilot+高德导航，解决右转卡顿
+    """
+    def __init__(self, max_acc=6.0, smooth_n=3, lost_timeout_ms=800):
+        self.last_dist_m = None
+        self.last_t_ms = None
+        self.last_speed = None
+        self.max_acc = max_acc
+        self.smooth_n = smooth_n
+        self.speed_hist = []
+        self.lost_timeout_ms = lost_timeout_ms
 
-  def __init__(self, max_acc=4.0, smooth_n=5, lost_timeout_ms=500):
-    self.last_dist_m = None
-    self.last_t_ms = None
-    self.last_speed = None   # 修改：初始化由 0.0 改为 None，更合理
-    self.max_acc = max_acc  # m/s²
-    self.smooth_n = smooth_n
-    self.speed_hist = []
-    self.lost_timeout_ms = lost_timeout_ms # 修改点：新增丢失超时参数
+    def update(self, dist_mm, t_ms):
+        # 距离丢失处理
+        if dist_mm is None:
+            if self.last_t_ms is None:
+                return None
+            now_diff = t_ms - self.last_t_ms
+            if now_diff > self.lost_timeout_ms:
+                self.last_dist_m = None
+                self.last_speed = None
+                self.speed_hist.clear()
+                return None
+            # 短时丢信号 安全保底输出 绝不卡死
+            return self.last_speed if self.last_speed is not None else 0.0
 
-  def update(self, dist_mm, t_ms):
-    # 处理“距离丢失”逻辑
-    if dist_mm is None:
-      # 没有历史数据 -> 无法产生速度
-      if self.last_t_ms is None:
-        return None
+        dist_m = dist_mm / 1000.0
+        # 首次初始化
+        if self.last_dist_m is None or self.last_t_ms is None:
+            self.last_dist_m = dist_m
+            self.last_t_ms = t_ms
+            self.last_speed = 0.0
+            return 0.0
 
-      # 距离丢失但未超过超时 -> 保持上一帧速度
-      if t_ms - self.last_t_ms < self.lost_timeout_ms:
-        return self.last_speed   # 关键改动：不立刻恢复为 None
+        dt_s = (t_ms - self.last_t_ms) / 1000.0
+        if dt_s <= 0:
+            return self.last_speed
 
-      # 距离丢失超过超时，真正重置速度
-      self.last_dist_m = None
-      self.last_t_ms = None
-      self.last_speed = None
-      self.speed_hist.clear()
-      return None
+        # 计算原始瞬时速度
+        delta_dist = dist_m - self.last_dist_m
+        raw_speed = delta_dist / dt_s
 
-    # 转米
-    dist_m = dist_mm / 1000.0
+        # 加速度限幅 防跳变
+        if self.last_speed is not None:
+            allowed_dv = self.max_acc * dt_s
+            low = self.last_speed - allowed_dv
+            high = self.last_speed + allowed_dv
+            filtered_speed = min(max(raw_speed, low), high)
+        else:
+            filtered_speed = raw_speed
 
-    # 第一帧
-    if self.last_dist_m is None or self.last_t_ms is None:
-      self.last_dist_m = dist_m
-      self.last_t_ms = t_ms
-      self.last_speed = 0.0
-      self._update_hist(0.0)
-      return None
+        # 滑动平滑
+        self.speed_hist.append(filtered_speed)
+        if len(self.speed_hist) > self.smooth_n:
+            self.speed_hist.pop(0)
+        final_speed = sum(self.speed_hist) / len(self.speed_hist)
 
-    # 时间差
-    dt_ms = t_ms - self.last_t_ms
-    if dt_ms <= 0:
-      return self.last_speed  # 时间异常，保留上次速度
+        # 更新状态
+        self.last_dist_m = dist_m
+        self.last_t_ms = t_ms
+        self.last_speed = final_speed
 
-    dt = dt_ms / 1000.0
-    raw_speed = (dist_m - self.last_dist_m) / dt
-
-    # 加速度限制
-    allowed_dv = self.max_acc * dt
-    low = self.last_speed - allowed_dv
-    high = self.last_speed + allowed_dv
-    filtered_speed = min(max(raw_speed, low), high)
-
-    # 保存状态
-    self.last_dist_m = dist_m
-    self.last_t_ms = t_ms
-    self.last_speed = filtered_speed
-    return self._update_hist(filtered_speed)
-
-  def _update_hist(self, speed):
-    """滑动平均（只对非 None 值）"""
-    self.speed_hist.append(speed)
-    if len(self.speed_hist) > self.smooth_n:
-      self.speed_hist.pop(0)
-    return sum(self.speed_hist) / len(self.speed_hist)
+        return final_speed
 
 class SharedData:
   def __init__(self):
