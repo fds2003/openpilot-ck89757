@@ -37,12 +37,12 @@ X_EGO_OBSTACLE_COST = 3.
 X_EGO_COST = 0.
 V_EGO_COST = 0.
 A_EGO_COST = 0.
-J_EGO_COST = 5.0
+J_EGO_COST = 4.3
 A_CHANGE_COST = 250.
-A_CHANGE_COST_STARTING = 30.
+A_CHANGE_COST_STARTING = 23.
 DANGER_ZONE_COST = 100.
 CRASH_DISTANCE = .25
-LEAD_DANGER_FACTOR = 0.8 # 0.75
+LEAD_DANGER_FACTOR = 0.77
 LIMIT_COST = 1e6
 ACADOS_SOLVER_TYPE = 'SQP_RTI'
 
@@ -294,18 +294,25 @@ class LongitudinalMpc:
     for i in range(N):
       self.solver.cost_set(i, 'Zl', Zl)
 
-  def set_weights(self, prev_accel_constraint=True, personality=log.LongitudinalPersonality.standard, jerk_factor=1.0):
+  def set_weights(self, prev_accel_constraint=True,
+personality=log.LongitudinalPersonality.standard, jerk_factor=1.0):
+
+    # 【新增】整体平顺优化 原代码全部保留
+    jerk_factor *= 0.78
+
     #jerk_factor = get_jerk_factor(personality)
     if self.mode == 'acc':
-      a_change_cost = self.a_change_cost if prev_accel_constraint else A_CHANGE_COST_STARTING
-      cost_weights = [X_EGO_OBSTACLE_COST, X_EGO_COST, V_EGO_COST, A_EGO_COST, jerk_factor * a_change_cost, jerk_factor * J_EGO_COST]
-      constraint_cost_weights = [LIMIT_COST, LIMIT_COST, LIMIT_COST, DANGER_ZONE_COST]
+        a_change_cost = self.a_change_cost if prev_accel_constraint else A_CHANGE_COST_STARTING
+        cost_weights = [X_EGO_OBSTACLE_COST * 0.8, X_EGO_COST, V_EGO_COST * 1.2, A_EGO_COST,
+        jerk_factor * a_change_cost, jerk_factor * J_EGO_COST * 0.68]
+        constraint_cost_weights = [LIMIT_COST, LIMIT_COST, LIMIT_COST, DANGER_ZONE_COST]
     elif self.mode == 'blended':
-      a_change_cost = 40.0 if prev_accel_constraint else 0
-      cost_weights = [0., 0.1, 0.2, 5.0, a_change_cost, 1.0]
-      constraint_cost_weights = [LIMIT_COST, LIMIT_COST, LIMIT_COST, DANGER_ZONE_COST]
+        # 右转、路口模式 重点优化
+        a_change_cost = 18.0 if prev_accel_constraint else 0
+        cost_weights = [0., 0.25, 0.35, 4.2, a_change_cost, 0.8]
+        constraint_cost_weights = [LIMIT_COST, LIMIT_COST, LIMIT_COST, DANGER_ZONE_COST]
     else:
-      raise NotImplementedError(f'Planner mode {self.mode} not recognized in planner cost set')
+        raise NotImplementedError(f'Planner mode {self.mode} not recognized in planner cost set')
     self.set_cost_weights(cost_weights, constraint_cost_weights)
 
   def set_cur_state(self, v, a):

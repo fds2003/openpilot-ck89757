@@ -93,20 +93,59 @@ class Parser:
     return True
 
   def parse_vision_outputs(self, outs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-    self.parse_mdn('pose', outs, in_N=0, out_N=0, out_shape=(ModelConstants.POSE_WIDTH,))
-    self.parse_mdn('wide_from_device_euler', outs, in_N=0, out_N=0, out_shape=(ModelConstants.WIDE_FROM_DEVICE_WIDTH,))
-    self.parse_mdn('road_transform', outs, in_N=0, out_N=0, out_shape=(ModelConstants.POSE_WIDTH,))
-    self.parse_mdn('lane_lines', outs, in_N=0, out_N=0, out_shape=(ModelConstants.NUM_LANE_LINES,ModelConstants.IDX_N,ModelConstants.LANE_LINES_WIDTH))
-    self.parse_mdn('road_edges', outs, in_N=0, out_N=0, out_shape=(ModelConstants.NUM_ROAD_EDGES,ModelConstants.IDX_N,ModelConstants.LANE_LINES_WIDTH))
+    # Pose / Calibration
+    self.parse_mdn('pose', outs, in_N=0, out_N=0,
+                    out_shape=(ModelConstants.POSE_WIDTH,))
+    self.parse_mdn('wide_from_device_euler', outs, in_N=0, out_N=0,
+                    out_shape=(ModelConstants.WIDE_FROM_DEVICE_WIDTH,))
+    self.parse_mdn('road_transform', outs, in_N=0, out_N=0,
+                    out_shape=(ModelConstants.POSE_WIDTH,))
+
+    # Lanes / Road Edges
+    self.parse_mdn('lane_lines', outs, in_N=0, out_N=0,
+                    out_shape=(ModelConstants.NUM_LANE_LINES,
+                               ModelConstants.IDX_N,
+                               ModelConstants.LANE_LINES_WIDTH))
+    self.parse_mdn('road_edges', outs, in_N=0, out_N=0,
+                    out_shape=(ModelConstants.NUM_ROAD_EDGES,
+                               ModelConstants.IDX_N,
+                               ModelConstants.LANE_LINES_WIDTH))
+
+    # ↑ 车道线置信度阈值（抑制误检）
     self.parse_binary_crossentropy('lane_lines_prob', outs)
-    self.parse_categorical_crossentropy('desire_pred', outs, out_shape=(ModelConstants.DESIRE_PRED_LEN,ModelConstants.DESIRE_PRED_WIDTH))
+    outs['lane_lines_prob'] = np.where(outs['lane_lines_prob'] > 0.2,
+                                        outs['lane_lines_prob'], 0.0)
+
+    # Desire / Meta
+    self.parse_categorical_crossentropy(
+        'desire_pred', outs,
+        out_shape=(ModelConstants.DESIRE_PRED_LEN,
+                   ModelConstants.DESIRE_PRED_WIDTH))
     self.parse_binary_crossentropy('meta', outs)
+
+    # ↑ 前车置信度阈值（过滤路边静止/误识别）
     self.parse_binary_crossentropy('lead_prob', outs)
-    lead_mhp = self.is_mhp(outs, 'lead', ModelConstants.LEAD_MHP_SELECTION * ModelConstants.LEAD_TRAJ_LEN * ModelConstants.LEAD_WIDTH)
-    lead_in_N, lead_out_N = (ModelConstants.LEAD_MHP_N, ModelConstants.LEAD_MHP_SELECTION) if lead_mhp else (0, 0)
-    lead_out_shape = (ModelConstants.LEAD_TRAJ_LEN, ModelConstants.LEAD_WIDTH) if lead_mhp else \
-        (ModelConstants.LEAD_MHP_SELECTION, ModelConstants.LEAD_TRAJ_LEN, ModelConstants.LEAD_WIDTH)
-    self.parse_mdn('lead', outs, in_N=lead_in_N, out_N=lead_out_N, out_shape=lead_out_shape)
+    outs['lead_prob'] = np.where(outs['lead_prob'] > 0.35,
+                                  outs['lead_prob'], 0.0)
+
+    # Lead MHP
+    lead_mhp = self.is_mhp(
+        outs, 'lead',
+        ModelConstants.LEAD_MHP_SELECTION *
+        ModelConstants.LEAD_TRAJ_LEN *
+        ModelConstants.LEAD_WIDTH)
+    lead_in_N, lead_out_N = (
+        (ModelConstants.LEAD_MHP_N, ModelConstants.LEAD_MHP_SELECTION)
+        if lead_mhp else (0, 0))
+    lead_out_shape = (
+        (ModelConstants.LEAD_TRAJ_LEN, ModelConstants.LEAD_WIDTH)
+        if lead_mhp else
+        (ModelConstants.LEAD_MHP_SELECTION,
+         ModelConstants.LEAD_TRAJ_LEN,
+         ModelConstants.LEAD_WIDTH))
+    self.parse_mdn('lead', outs, in_N=lead_in_N, out_N=lead_out_N,
+                    out_shape=lead_out_shape)
+
     return outs
 
   def parse_policy_outputs(self, outs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:

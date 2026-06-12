@@ -19,6 +19,7 @@ from openpilot.selfdrive.carrot.config import UnifiedParams
 # 导航状态（仅给过弯优化用，不影响任何功能）
 NAV_ACTIVE = False
 NAV_LAST_UPDATE = 0.0
+NAV_MANEUVER = "none"  # 掉头动作标记
 BLINKER_NONE = 0
 BLINKER_LEFT = 1
 BLINKER_RIGHT = 2
@@ -181,6 +182,27 @@ def f2(x):
   return round(float(x), 2)
 
 class AmapNaviServ:
+  # 修复后的 process_nav_cmd
+  def process_nav_cmd(self, cmd, car_dist_to_line=0.0):
+      # 适配carrotMan转向指令
+      turn_left = "turn left" in cmd.atcType.lower()
+      turn_right = "turn right" in cmd.atcType.lower()
+
+      if turn_left or turn_right:
+          self.turn_active = True
+          self.turn_start_dist = car_dist_to_line
+
+      if self.turn_active:
+          dist_passed = abs(self.turn_start_dist - car_dist_to_line)
+          if dist_passed < self.turn_hold_dist:
+              force_turn_mode = True
+          else:
+              self.turn_active = False
+              force_turn_mode = False
+      else:
+          force_turn_mode = False
+      return force_turn_mode
+  # ====================================================
   def __init__(self):
     self.shared_data = SharedData() #new
     self.params = UnifiedParams()
@@ -225,10 +247,18 @@ class AmapNaviServ:
     self.dynamicBlindRange = 0
     self.dynamicBlindDistance = 0
     self.atc_flag = False
+    # ========== 在这里插入转弯保持变量 ==========
+    # 转弯状态保持参数（解决转弯中途路径回弹）
+    self.turn_hold_dist = 3.0    # 过停止线后继续保持转弯状态3米
+    self.turn_hold_time = 2.0    # 时间兜底2秒
+    self.turn_start_dist = 0.0
+    self.turn_active = False
+    #
     # 更新导航状态（过弯优化用）
     global NAV_ACTIVE, NAV_LAST_UPDATE
     NAV_ACTIVE = self.atc_flag
     NAV_LAST_UPDATE = time.time()
+
     self.lf_object_detected_count = 0
     self.lb_object_detected_count = 0
     self.rf_object_detected_count = 0
@@ -561,6 +591,16 @@ class AmapNaviServ:
         self.update_param()  # 更新参数
         self.lidar_object_blind()
         self.solid_line_blind()
+        # ========== 新增：周期刷新导航转向状态 ==========
+        global NAV_MANEUVER
+        NAV_MANEUVER = "none"
+        if self.sm.alive['carrotMan']:
+            carrotMan = self.sm['carrotMan']
+            atc = carrotMan.atcType.lower()
+            self.process_nav_cmd(carrotMan, 0.0)
+            if "uturn" in atc or "u-turn" in atc or "掉头" in atc:
+                NAV_MANEUVER = "uTurn"
+        # ============================================
 
         #拷贝客户端列表
         with lock:
@@ -1648,12 +1688,51 @@ class AmapNaviServ:
             #curvature_value = float(max_orientation_rate)
             #curvature_direction = 1 if max_orientation_rate > 0 else -1
             msg['max_curve'] = f1(max_orientation_rate)
+        # ===== 核心路径曲线修复 开始 =====
+        # 下发完整长距离路径点，解决转弯中途截断
+        if hasattr(modelV2, 'position') and len(modelV2.position.x) > 0:
+            msg['path_x'] = self._capnp_list_to_list(modelV2.position.x, max_items=140)
+            msg['path_y'] = self._capnp_list_to_list(modelV2.position.y, max_items=140)
 
-        # 如果字段存在才赋值
-        if self.shared_data.leftFrontBlind is None and hasattr(meta, 'leftFrontBlind'):
-          msg['l_front_blind'] = meta.leftFrontBlind
-        if self.shared_data.rightFrontBlind is None and hasattr(meta, 'rightFrontBlind'):
-          msg['r_front_blind'] = meta.rightFrontBlind
+        # 导航转向标记，强制UI渲染左右转弯弧线
+        # 函数内开头统一声明全局变量（关键修复）
+        global NAV_MANEUVER
+
+        turn_right = 0
+        turn_left = 0
+        turn_uturn = 0
+        # 先默认置空，兜底
+        NAV_MANEUVER = "none"
+
+        # 安全获取导航指令
+        if self.sm.alive.get('carrotMan', False):
+            carrotMan = self.sm['carrotMan']
+            atc = carrotMan.atcType.lower()
+
+            # 左右转判断
+            if "right" in atc:
+                turn_right = 1
+                NAV_MANEUVER = "right"
+            if "left" in atc:
+                turn_left = 1
+                NAV_MANEUVER = "left"
+
+            # 掉头判断
+            if "uturn" in atc or "u-turn" in atc or "掉头" in atc:
+                turn_uturn = 1
+                NAV_MANEUVER = "uTurn"
+
+        # 写入消息体，对外通讯
+        msg['turn_right'] = turn_right
+        msg['turn_left'] = turn_left
+        msg['turn_uturn'] = turn_uturn
+            
+    # 如果字段存在才赋值
+    if self.shared_data.leftFrontBlind is None and hasattr(meta, 'leftFrontBlind'):
+      msg['l_front_blind'] = meta.leftFrontBlind
+    if self.shared_data.rightFrontBlind is None and hasattr(meta, 'rightFrontBlind'):
+      msg['r_front_blind'] = meta.rightFrontBlind
+
 
     #===============巡航状态处理==============
     if self.sm.alive['selfdriveState']:
@@ -1718,6 +1797,52 @@ class AmapNaviServ:
         msg['road_name'] = carrotMan.szPosRoadName
 
     return json.dumps(msg)
+    
+    # 1.窄路判定：低速＜60km总宽＜3.3m开启强力纠偏，高速窄路不提升增益
+    total_lane = l_w + r_w
+    v_spd = msg.get("v_ego_kph", 0)
+    is_narrow_road = total_lane < 3.3 and v_spd < 60
+
+    # 2.大路口转向判定：识别左右转/掉头=大路口
+    is_big_cross = False
+    if msg.get("turn_left",0)==1 or msg.get("turn_right",0)==1 or     msg.get("turn_uturn",0)==1:
+        is_big_cross = True
+
+    # 3.临近路沿判定：单侧距离＜0.55m，仅低速生效防高速误触发
+    near_curb = ((left_edge < 0.55) or (right_edge < 0.55)) and v_spd < 60
+
+    # 标记写入消息体，下层planner/MPC读取
+    msg["is_narrow_road"] = is_narrow_road
+    msg["is_big_cross"] = is_big_cross
+    msg["near_road_edge"] = near_curb
+    msg["left_edge_m"] = left_edge
+    msg["right_edge_m"] = right_edge
+
+    # 动态修正增益：窄路/大路口/贴路边 提升修正力度1.95，常规路况0.90
+    if is_narrow_road or is_big_cross or near_curb:
+        msg["navi_correct_gain"] = 1.95
+    else:
+        msg["navi_correct_gain"] = 0.90
+
+    #=====【新增：高速右侧邻大车自动左偏预留安全间隙】====
+    #读取车速、右侧车道宽度，无数据默认99
+    r_lane_w = msg.get("r_lane_width",99.0)
+    #仅＞85km/h才开启大车避让，低于85全部归零
+    highway_enable = v_spd >= 85
+    if not highway_enable:
+        msg["has_right_big_truck"] = False
+        msg["truck_left_offset"] = 0.0
+    else:
+        #右车道宽度＜2.9判定大车近距离，偏移0.32m
+        right_truck_close = True if r_lane_w < 2.9 else False
+        if right_truck_close:
+            msg["has_right_big_truck"] = True
+            msg["truck_left_offset"] = 0.32
+        else:
+            msg["has_right_big_truck"] = False
+            msg["truck_left_offset"] = 0.0
+    NAV_MSG_DATA = msg
+    #=========================================
 
   def make_blinker_message(self):
     msg = {}

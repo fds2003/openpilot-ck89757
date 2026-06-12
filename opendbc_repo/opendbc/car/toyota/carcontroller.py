@@ -82,7 +82,7 @@ class CarController(CarControllerBase):
 
     # ====================== 优化版·卡罗拉专用 ======================
     v = CS.out.vEgo
-    speed_list = [0, 15, 30, 50, 100]
+    speed_list = [0, 15, 30, 50, 110]
     gain_list  = [1.15, 1.12, 1.08, 1.05, 1.03]
     steer_scale = float(np.interp(v, speed_list, gain_list))
 
@@ -97,7 +97,7 @@ class CarController(CarControllerBase):
         right_turn_comp = 2.5
     steer_desired_deg += right_turn_comp
 
-    new_torque = int(round(actuators.torque * self.params.STEER_MAX * steer_scale))
+    new_torque = int(round(actuators.torque * self.params.STEER_MAX *         steer_scale))
     # =================================================================
 
     apply_torque = apply_meas_steer_torque_limits(new_torque, self.last_torque, CS.out.steeringTorqueEps, self.params)
