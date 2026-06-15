@@ -16,7 +16,7 @@ PATH_COST = 1.0
 LATERAL_MOTION_COST = 0.11
 LATERAL_ACCEL_COST = 0.0
 LATERAL_JERK_COST = 0.04
-STEERING_RATE_COST = 350.0
+STEERING_RATE_COST = 220.0
 # ===================== 导航联动优化（与 amap_navi 对接）=====================
 NAV_TIMEOUT = 3.5
 last_nav_update = 0.0
@@ -38,11 +38,12 @@ SPEED_LOW = 8.0
 SPEED_HIGH = 25.0
 # ========== 高速防抖&防锁死核心参数【路径条安全版】 ==========
 SPEED_GRID_KPH = [0, 15, 30, 50, 80, 110]
-PLAN_GAIN_TABLE = [1.10, 1.08, 1.04, 1.01, 0.95, 0.91]
+PLAN_GAIN_TABLE = [1.18, 1.12, 1.06, 1.01, 0.95, 0.91]
 ANGLE_ERR_THRESH = 10.0
-ANGLE_ERR_EXTRA_GAIN = 1.01
-RIGHT_TURN_ANGLE_THRESH = 4.0
-RIGHT_TURN_CURV_COMP = 1.2
+ANGLE_ERR_EXTRA_GAIN = 1.02
+# 【优化】提升右转补偿力度，增强曲线跟随
+RIGHT_TURN_ANGLE_THRESH = 3.2
+RIGHT_TURN_CURV_COMP = 1.48
 CURV_COMP_SCALE = 1e-4
 HIGH_SPEED_DAMP = 0.83
 HIGH_SPEED_DAMP_PLUS = 0.89
@@ -81,6 +82,13 @@ LEFT_TURN_ADD_SCALE = 0.91
 TURN_LOOKAHEAD_FACTOR = 1.8
 BASE_PATH_POINTS = TRAJECTORY_SIZE
 PATH_STITCH_TURN_TOL = 0.5
+
+# ========== 右转贴边专用新增参数 ==========
+# 右转右侧安全余量(越小越贴边线)
+RIGHT_TURN_SAFE_MARGIN = 0.06
+# 右转整体向右偏移量(负值=靠右)
+RIGHT_TURN_FIX_OFFSET = -0.08
+
 def is_nav_active():
     global last_nav_update, nav_hold_mode,g_narrow_road,g_big_cross,g_near_edge,g_nav_gain,g_has_right_truck,g_truck_left_offset
     try:
@@ -173,7 +181,7 @@ class LateralPlanner:
     self.x_sol = np.zeros((TRAJECTORY_SIZE, 4), dtype=np.float32)
     self.v_ego = MIN_SPEED
     self.l_lane_change_prob = 0.0
-    self.r_lane_change_prob = 0.0
+    self.r_l_lane_change_prob = 0.0
     self.debug_mode = debug
     self.params = Params()
     self.latDebugText = ""
@@ -246,7 +254,7 @@ class LateralPlanner:
     if global_in_turn and (now_ts - global_turn_lock_ts) > TURN_LOCK_TIMEOUT:
         global_in_turn = False
     if nav_active and (right_turn_active or g_big_cross or turn_locked):
-        self.lat_mpc.nav_gain = 1.3
+        self.lat_mpc.nav_gain = 1.45
     else:
         self.lat_mpc.nav_gain = 1.0
     temp_path_cost = self.lateralPathCost
@@ -267,8 +275,13 @@ class LateralPlanner:
     else:
         temp_steer_rate_cost *= speed_steer_gain
         temp_path_cost *= speed_steer_gain
-    # ========= 解除高速过弯方向限制，恢复曲率跟随 =========
-    measured_curvature = np.clip(measured_curvature,-0.026,0.026)
+    # ========= 【核心优化1】区分场景放宽曲率限幅，右转/路口允许更大曲率 =========
+    if right_turn_active or g_big_cross or global_in_turn:
+        # 转弯/大路口：放宽上限，保证曲线形态
+        measured_curvature = np.clip(measured_curvature, -0.038, 0.038)
+    else:
+        # 正常直行道路：保留原限制，保证稳定
+        measured_curvature = np.clip(measured_curvature, -0.026, 0.026)
     md = sm['modelV2']
     model_valid = (len(md.position.x) == TRAJECTORY_SIZE and len(md.orientation.x) == TRAJECTORY_SIZE)
     if model_valid:
@@ -281,14 +294,15 @@ class LateralPlanner:
             raw_yaw[1:] *= 0.90
             raw_y += LEFT_TURN_GLOBAL_OFFSET
         vkph = self.v_ego *3.6
+        # ========= 【核心优化2】右转场景降低平滑强度，曲线更灵动不僵硬 =========
         if right_turn_active or g_big_cross:
-            smooth_alpha = 0.25
+            smooth_alpha = 0.11
         elif vkph > 100:
             smooth_alpha = 0.80
         elif vkph > 40:
             smooth_alpha = 0.45
         else:
-            smooth_alpha = 0.30
+            smooth_alpha = 0.22
         smooth_y = smooth_alpha*smooth_y_prev + (1-smooth_alpha)*raw_y
         smooth_yaw = smooth_alpha*smooth_yaw_prev + (1-smooth_alpha)*raw_yaw
         smooth_y_prev = smooth_y.copy()
@@ -348,9 +362,10 @@ class LateralPlanner:
         line_extra_margin = YELLOW_SINGLE_ADD
     final_scale = base_scale * turn_scale * line_scale
     final_total_margin = curr_margin + line_extra_margin
+    # ========= 【核心优化3】右转场景取消额外缩放压制，完整保留转弯轨迹 =========
     if global_in_turn and not right_turn_active:
-        final_scale *= 0.94
-        final_total_margin += 0.03
+        final_scale *= 0.97
+        final_total_margin += 0.02
     is_left_turn_scene = is_intersection_left_turn(sm)
     if is_left_turn_scene:
         final_scale *= LEFT_TURN_ADD_SCALE
@@ -359,10 +374,22 @@ class LateralPlanner:
     lane_left_bound = - (lane_w_left / 2.0)
     lane_right_bound = (lane_w_right / 2.0)
     safe_left = lane_left_bound + final_total_margin + 0.04
-    safe_right = lane_right_bound - curr_margin
+
+    # 右转收紧右侧安全边距，贴近车道最右侧
+    if right_turn_active:
+        safe_right = lane_right_bound - RIGHT_TURN_SAFE_MARGIN
+    else:
+        safe_right = lane_right_bound - curr_margin
+
     if is_left_turn_scene:
         safe_left += 0.05
+
+    # 右转整体路径向右偏移，进一步贴紧右侧
+    if right_turn_active:
+        self.path_xyz[:, 1] += RIGHT_TURN_FIX_OFFSET
+
     self.path_xyz[:, 1] = np.clip(self.path_xyz[:, 1], safe_left, safe_right)
+
     if LANE_CHANGE_SOLID_BLOCK and check_solid_lane_line(md):
         self.LP.lane_change_multiplier = 0.0
     if self.v_ego < 18:
@@ -373,8 +400,18 @@ class LateralPlanner:
         else:
             self.useLaneLineMode = True
     curvature = measured_curvature
+    # 右转专属曲率强化，弯道不向外飘
+    if right_turn_active:
+        curvature *= 1.15
+    # ========= 【核心优化4】强化低速转弯曲率增益，路口右转不被拉直 =========
     if 0.0006 < abs(curvature) < 0.0015 and self.v_ego < 30:
         curvature = np.sign(curvature) * 0.0018
+    # 低速(<30km/h)大曲率 增强增益
+    if abs(curvature) >= 0.0015 and self.v_ego < 30:
+        curvature *= 1.55
+    # 中速(30~50km/h)弯道 小幅增强
+    if abs(curvature) >= 0.0012 and 30 <= self.v_ego < 50:
+        curvature *= 1.22
     self.LP.curvature = curvature
     if nav_active:
         self.LP.lane_change_multiplier = 0.0
@@ -421,8 +458,11 @@ class LateralPlanner:
         else:
             current_steer = HIGH_SPEED_DAMP * LAST_STEER_CMD + (1 - HIGH_SPEED_DAMP) * current_steer
     LAST_STEER_CMD = current_steer
-    # 全局限幅兜底，不单独限制路口/窄路
-    current_steer = np.clip(current_steer, -0.52, 0.52)
+    # ========= 【核心优化5】低速转向区间进一步放宽，适配大角度右转 =========
+    if self.v_ego < 30:
+        current_steer = np.clip(current_steer, -0.65, 0.65)
+    else:
+        current_steer = np.clip(current_steer, -0.52, 0.52)
     self.x_sol[:, 3] = current_steer
     self.x0[3] = np.interp(DT_MDL, self.t_idxs[:LAT_MPC_N + 1], self.x_sol[:, 3])
     mpc_nans = np.isnan(self.x_sol[:, 3]).any()
@@ -456,9 +496,6 @@ class LateralPlanner:
         lateralPlan.solverCost = self.lat_mpc.cost
         lateralPlan.solverState = log.LateralPlan.SolverState.new_message()
     lateralPlan.solverState.x = self.x_sol.tolist()
-    lateralPlan.solverState.u = self.lat_mpc.u_sol.flatten().tolist()
-    lateralPlan.useLaneLines = self.lanelines_active
-    lateralPlan.laneWidth = float(self.LP.lane_width)
     lateralPlan.position.x = self.x_sol[:, 0].tolist()
     lateralPlan.position.y = self.x_sol[:, 1].tolist()
     lateralPlan.position.z = self.path_xyz[:, 2].tolist()

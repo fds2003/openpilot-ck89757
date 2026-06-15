@@ -80,25 +80,42 @@ class CarController(CarControllerBase):
     self.params.STEER_DELTA_UP = self.params.STEER_DELTA_UP if steerDeltaUp <= 0 else steerDeltaUp
     self.params.STEER_DELTA_DOWN = self.params.STEER_DELTA_DOWN if steerDeltaDown <= 0 else steerDeltaDown
 
-    # ====================== 优化版·卡罗拉专用 ======================
+    # ===================== 优化版·卡罗拉专用（防故障+右转增强） =====================
     v = CS.out.vEgo
     speed_list = [0, 15, 30, 50, 110]
-    gain_list  = [1.15, 1.12, 1.08, 1.05, 1.03]
+    gain_list = [1.15, 1.10, 1.05, 1.03, 1.01]  # 降低基础增益，不顶格
     steer_scale = float(np.interp(v, speed_list, gain_list))
 
     angle_err = abs(actuators.steeringAngleDeg - CS.out.steeringAngleDeg)
     if angle_err > 8.0:
-        steer_scale *= 1.08
+        steer_scale *= 1.05  # 误差增益也降低，避免突变
 
-    steer_desired_deg = actuators.steeringAngleDeg * 1.18
+    # 【核心优化1】不直接放大目标角度，只在扭矩层面做动态补偿
+    # 低速强补偿，高速弱补偿，防止画龙和顶格
+    if v < 30:
+        torque_comp = 1.10
+    elif v < 60:
+        torque_comp = 1.05
+    else:
+        torque_comp = 1.00
 
-    right_turn_comp = 0.0
-    if steer_desired_deg > 4.0:
-        right_turn_comp = 2.5
-    steer_desired_deg += right_turn_comp
+    # 【核心优化2】右转专属扭矩补偿（只加扭矩，不加角度）
+    right_turn_torque_comp = 1.0
+    # 仅在低速+大角度右转时生效，高速不额外加
+    if actuators.steeringAngleDeg > 3.5 and v < 40:
+        # 角度越大，补偿越强，但有上限，防止突变
+        comp_factor = min((actuators.steeringAngleDeg - 3.5) / 10, 0.8)
+        right_turn_torque_comp = 1.0 + (0.15 * comp_factor)  # 最高+15%扭矩
 
-    new_torque = int(round(actuators.torque * self.params.STEER_MAX *         steer_scale))
-    # =================================================================
+    # 【核心优化3】双重补偿叠加，但不顶格
+    final_torque_scale = steer_scale * torque_comp * right_turn_torque_comp
+
+    # 【核心优化4】扭矩钳位，防止超出硬件上限
+    # 用比例限制，而不是固定值，适配不同车型的STEER_MAX
+    final_torque_scale = np.clip(final_torque_scale, 0.8, 1.25)
+
+    new_torque = int(round(actuators.torque * self.params.STEER_MAX * final_torque_scale))
+    # ======================================================================
 
     apply_torque = apply_meas_steer_torque_limits(new_torque, self.last_torque, CS.out.steeringTorqueEps, self.params)
     self.steer_rate_counter, apply_steer_req = common_fault_avoidance(abs(CS.out.steeringRateDeg) >= MAX_STEER_RATE, lat_active,
