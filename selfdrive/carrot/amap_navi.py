@@ -184,24 +184,51 @@ def f2(x):
 class AmapNaviServ:
   # 修复后的 process_nav_cmd
   def process_nav_cmd(self, cmd, car_dist_to_line=0.0):
-      # 适配carrotMan转向指令
-      turn_left = "turn left" in cmd.atcType.lower()
-      turn_right = "turn right" in cmd.atcType.lower()
+    # 适配carrotMan转向指令：严格区分【正常靠左/靠右】和【真正左转/右转】
+    cmd_type = cmd.atcType.lower()
+    turn_left = "turn left" in cmd_type
+    turn_right = "turn right" in cmd_type
+    # 新增：高架/主路正常靠左、靠右行驶（仅车道居中微调，不触发转向/变道）
+    keep_left = "keep left" in cmd_type
+    keep_right = "keep right" in cmd_type
 
-      if turn_left or turn_right:
-          self.turn_active = True
-          self.turn_start_dist = car_dist_to_line
+    # 场景1：正常靠左/靠右行驶 → 禁用转向模式，仅车道保持
+    if keep_left or keep_right:
+        self.turn_active = False
+        force_turn_mode = False
+        self.current_path_finished = True  # 解锁路径
+        return force_turn_mode
 
-      if self.turn_active:
-          dist_passed = abs(self.turn_start_dist - car_dist_to_line)
-          if dist_passed < self.turn_hold_dist:
-              force_turn_mode = True
-          else:
-              self.turn_active = False
-              force_turn_mode = False
-      else:
-          force_turn_mode = False
-      return force_turn_mode
+    # 场景2：距离路口过远 → 暂不执行转向，防止提前甩路径
+    if car_dist_to_line > self.min_instr_distance:
+        self.turn_active = False
+        force_turn_mode = False
+        return force_turn_mode
+
+    # 场景3：当前路径未完成 → 拒绝新转向指令（核心：防弯道提前出左转轨迹）
+    if not self.current_path_finished:
+        force_turn_mode = False
+        return force_turn_mode
+
+    # 场景4：真正左右转弯 → 走原有转向逻辑
+    if turn_left or turn_right:
+        self.turn_active = True
+        self.turn_start_dist = car_dist_to_line
+        self.current_path_finished = False  # 标记当前路径执行中，锁定新指令
+        self.last_maneuver = cmd_type
+
+    if self.turn_active:
+        dist_passed = abs(self.turn_start_dist - car_dist_to_line)
+        if dist_passed < self.turn_hold_dist:
+            force_turn_mode = True
+        else:
+            self.turn_active = False
+            self.current_path_finished = True  # 转弯完成，解锁路径
+            force_turn_mode = False
+    else:
+        force_turn_mode = False
+
+    return force_turn_mode
   # ====================================================
   def __init__(self):
     self.shared_data = SharedData() #new
@@ -247,13 +274,18 @@ class AmapNaviServ:
     self.dynamicBlindRange = 0
     self.dynamicBlindDistance = 0
     self.atc_flag = False
-    # ========== 在这里插入转弯保持变量 ==========
-    # 转弯状态保持参数（解决转弯中途路径回弹）
+
+    # ========== 转弯状态保持参数（解决转弯中途路径回弹） ==========
     self.turn_hold_dist = 3.0    # 过停止线后继续保持转弯状态3米
     self.turn_hold_time = 2.0    # 时间兜底2秒
     self.turn_start_dist = 0.0
     self.turn_active = False
-    #
+
+    # ========== 新增：导航指令距离阈值 + 路径锁（防提前甩轨迹） ==========
+    self.min_instr_distance = 25.0   # 单位：米，距离路口>25米时，转向指令不生效
+    self.current_path_finished = True # 当前路径是否完成锁
+    self.last_maneuver = "none"      # 记录上一条导航动作
+
     # 更新导航状态（过弯优化用）
     global NAV_ACTIVE, NAV_LAST_UPDATE
     NAV_ACTIVE = self.atc_flag
@@ -407,7 +439,14 @@ class AmapNaviServ:
     fork_left_right = False
     fork_now = False
     atc_left_right = False
-
+    
+    # 新增：主路正常靠左/靠右，不属于转弯、变道，屏蔽转向灯与转向逻辑
+    if atc_type in ["keep left", "keep right"]:
+      atc_blinker_state = BLINKER_NONE
+      turn_left_right = False
+      fork_left_right = False
+      fork_now = False
+      atc_left_right = False
     #判断导航控制类型
     if atc_type in ["turn left", "turn right"]: #转弯请求
       atc_blinker_state = BLINKER_LEFT if "left" in atc_type else BLINKER_RIGHT
@@ -1795,8 +1834,6 @@ class AmapNaviServ:
         carrotMan = self.sm['carrotMan']
         msg['atc_type'] = carrotMan.atcType
         msg['road_name'] = carrotMan.szPosRoadName
-
-    return json.dumps(msg)
     
     # 1.窄路判定：低速＜60km总宽＜3.3m开启强力纠偏，高速窄路不提升增益
     total_lane = l_w + r_w
@@ -1843,6 +1880,7 @@ class AmapNaviServ:
             msg["truck_left_offset"] = 0.0
     NAV_MSG_DATA = msg
     #=========================================
+    return json.dumps(msg)
 
   def make_blinker_message(self):
     msg = {}
