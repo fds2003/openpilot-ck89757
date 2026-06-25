@@ -2060,18 +2060,21 @@ public:
         //float desired_distance = lp.getDesiredDistance();
         float accel = lp.getAccels()[0];
 
-        if (show_path_color >= 20) {
-          if (longActive) {
-            show_path_color = 13;// green
+        // 强制动态颜色逻辑：绿(巡航) -> 黄(轻刹) -> 红(重刹)
+        if (longActive) {
+            show_path_color = 13; // 默认绿色
             if (lead_one.getStatus()) {
-              if (abs(accel) < 0.5f) show_path_color = 12; // yellow
-              else if (accel >= 0.5f) show_path_color = 11; // amber
-              else show_path_color = 10; // red
+                float abs_accel = abs(accel);
+                if (abs_accel < 0.5f) {
+                    show_path_color = 12; // 黄色 (轻微减速)
+                } else if (abs_accel >= 0.5f && abs_accel < 1.5f) {
+                    show_path_color = 11; // 橙色/琥珀色 (中等刹车)
+                } else if (abs_accel >= 1.5f) {
+                    show_path_color = 10; // 红色 (重刹)
+                }
             }
-          }
-          else {
-            show_path_color = 19; // black
-          }
+        } else {
+            show_path_color = 13; // 巡航关闭时也显示绿色（或者你想设为黑色19也可以）
         }
 
         if (show_path_mode == 0) {

@@ -80,42 +80,41 @@ class CarController(CarControllerBase):
     self.params.STEER_DELTA_UP = self.params.STEER_DELTA_UP if steerDeltaUp <= 0 else steerDeltaUp
     self.params.STEER_DELTA_DOWN = self.params.STEER_DELTA_DOWN if steerDeltaDown <= 0 else steerDeltaDown
 
-    # ===================== 优化版·卡罗拉专用（防故障+右转增强） =====================
+    # ====================== 老玩家专属 · 最终锁定版 ======================
+    #
+    # 【核心结论】
+    # 1. 扭矩增益必须 >1.0，但不能 >1.15（否则 EPS 过热/报错）。
+    # 2. 绝对不要手动修改 STEER_DELTA_UP/DOWN（原厂值 300~400 是甜点）。
+    # 3. 角度误差保护必须极克制（>12° 才干预，且只削弱 3%）。
+    #
+    # 【历史踩坑记录】
+    # - 曾尝试 STEER_DELTA = 800 → 触发 EPS 保护，巡航退出。
+    # - 曾尝试扭矩 1.35x → 低速抖动，EPS 报错。
+    # - 当前参数为“大力出奇迹”与“绝对稳定”的平衡点。
+    #
+    # 【适用场景】
+    # 丰田 TSS2 车型，已物理破解过 EPS，追求大角度掉头/右转手感。
+    # =====================================================================
+
     v = CS.out.vEgo
-    speed_list = [0, 15, 30, 50, 110]
-    gain_list = [1.15, 1.10, 1.05, 1.03, 1.01]  # 降低基础增益，不顶格
+
+    # 随速线性扭矩增益（黄金曲线）
+    # 低速 1.03~1.09：保证掉头/窄路力度
+    # 高速 1.12~1.14：保证变道/弯道稳定
+    speed_list = [0, 20, 40, 70, 120]
+    gain_list  = [1.03, 1.06, 1.09, 1.12, 1.14]
     steer_scale = float(np.interp(v, speed_list, gain_list))
 
+    # 角度误差智能保护（极克制版）
+    # 仅在超大角度误差时轻微限力，绝不中途掉扭矩
     angle_err = abs(actuators.steeringAngleDeg - CS.out.steeringAngleDeg)
-    if angle_err > 8.0:
-        steer_scale *= 1.05  # 误差增益也降低，避免突变
+    if angle_err > 12.0:
+        # 最大仅削弱 3%，手感几乎无损
+        steer_scale = max(1.05, steer_scale * 0.97)
 
-    # 【核心优化1】不直接放大目标角度，只在扭矩层面做动态补偿
-    # 低速强补偿，高速弱补偿，防止画龙和顶格
-    if v < 30:
-        torque_comp = 1.10
-    elif v < 60:
-        torque_comp = 1.05
-    else:
-        torque_comp = 1.00
-
-    # 【核心优化2】右转专属扭矩补偿（只加扭矩，不加角度）
-    right_turn_torque_comp = 1.0
-    # 仅在低速+大角度右转时生效，高速不额外加
-    if actuators.steeringAngleDeg > 3.5 and v < 40:
-        # 角度越大，补偿越强，但有上限，防止突变
-        comp_factor = min((actuators.steeringAngleDeg - 3.5) / 10, 0.8)
-        right_turn_torque_comp = 1.0 + (0.15 * comp_factor)  # 最高+15%扭矩
-
-    # 【核心优化3】双重补偿叠加，但不顶格
-    final_torque_scale = steer_scale * torque_comp * right_turn_torque_comp
-
-    # 【核心优化4】扭矩钳位，防止超出硬件上限
-    # 用比例限制，而不是固定值，适配不同车型的STEER_MAX
-    final_torque_scale = np.clip(final_torque_scale, 0.8, 1.25)
-
-    new_torque = int(round(actuators.torque * self.params.STEER_MAX * final_torque_scale))
-    # ======================================================================
+    # 最终扭矩输出（受 EPS 反馈限制，安全兜底）
+    new_torque = int(round(actuators.torque * self.params.STEER_MAX * steer_scale))
+    # =====================================================================
 
     apply_torque = apply_meas_steer_torque_limits(new_torque, self.last_torque, CS.out.steeringTorqueEps, self.params)
     self.steer_rate_counter, apply_steer_req = common_fault_avoidance(abs(CS.out.steeringRateDeg) >= MAX_STEER_RATE, lat_active,
@@ -128,7 +127,7 @@ class CarController(CarControllerBase):
       apply_torque = 0
       apply_steer_req = False
       if self.frame % 2 == 0:
-        apply_angle = steer_desired_deg + CS.out.steeringAngleOffsetDeg
+        apply_angle = actuators.steeringAngleDeg + CS.out.steeringAngleOffsetDeg
         self.last_angle = apply_std_steer_angle_limits(apply_angle, self.last_angle, CS.out.vEgoRaw,
                                                        CS.out.steeringAngleDeg + CS.out.steeringAngleOffsetDeg,
                                                        CC.latActive, self.params.ANGLE_LIMITS)
@@ -143,6 +142,7 @@ class CarController(CarControllerBase):
                               self.secoc_lka_message_counter,
                               steer_command)
       self.secoc_lka_message_counter += 1
+
     can_sends.append(steer_command)
 
     if self.frame % 2 == 0 and self.CP.carFingerprint in TSS2_CAR:

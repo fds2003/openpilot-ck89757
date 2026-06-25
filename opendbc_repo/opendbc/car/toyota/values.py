@@ -621,6 +621,10 @@ NO_STOP_TIMER_CAR = CAR.with_flags(ToyotaFlags.NO_STOP_TIMER)
 
 DBC = CAR.create_dbc_map()
 
+# ========== 车道贴边偏移（仅调试用） ==========
+LANE_OFFSET = 0.0   # 单位：米，正=right，负=left
+
+
 
 if __name__ == "__main__":
   cars = []
