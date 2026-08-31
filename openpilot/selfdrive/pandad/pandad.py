@@ -5,13 +5,24 @@ import usb1
 import time
 import signal
 import subprocess
+import threading
 
 from panda import Panda, PandaDFU, PandaProtocolMismatch, FW_PATH
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.params import Params
 from openpilot.system.hardware import HARDWARE
 from openpilot.common.swaglog import cloudlog
+from openpilot.common.utils import sudo_write
 from openpilot.selfdrive.pandad.panda_helpers import connect_all_pandas, pandas_include_internal
+
+
+def system_uptime() -> float:
+  """Seconds since system boot, read from /proc/uptime."""
+  try:
+    with open("/proc/uptime") as f:
+      return float(f.read().split()[0])
+  except Exception:
+    return 0.0
 
 
 def get_expected_signature(panda: Panda) -> bytes:
@@ -70,6 +81,39 @@ def flash_all_pandas(panda_serials: list[str]) -> list[Panda]:
   return connect_all_pandas(panda_serials, flash_panda)
 
 
+LTE_MODEM_PATH = "/sys/bus/usb/devices/1-1.1/authorized"
+
+
+def disable_lte_modem() -> bool:
+  """Deauthorize the internal LTE modem (USB 1-1.1) so it never configures with
+  its 500mA request.  The internal hub's per-port budget is 100mA; the modem's
+  request trips the hub's over-current protection, which repeatedly drops the
+  internal panda off the USB bus during early boot.  Returns True if the modem
+  was found and deauthorized."""
+  try:
+    with open(LTE_MODEM_PATH) as f:
+      if f.read().strip() != "1":
+        return False
+    sudo_write("0", LTE_MODEM_PATH)
+    return True
+  except (FileNotFoundError, PermissionError, OSError):
+    return False
+
+
+def lte_modem_watchdog() -> None:
+  """Early-boot watchdog: keep the internal LTE modem deauthorized during the
+  first ~90s of boot so its 500mA config request cannot trip the hub's
+  over-current protection and drop the panda off USB.  Runs in a background
+  thread so it never delays panda setup."""
+  try:
+    while system_uptime() < 90:
+      if disable_lte_modem():
+        cloudlog.info("Internal LTE modem deauthorized (USB hub over-current protection)")
+      time.sleep(0.5)
+  except Exception:
+    pass
+
+
 def main() -> None:
   # signal pandad to close the relay and exit
   def signal_handler(signum, frame):
@@ -82,6 +126,11 @@ def main() -> None:
   process = None
   do_exit = False
   signal.signal(signal.SIGINT, signal_handler)
+
+  # Deauthorize the internal LTE modem early in boot: its 500mA config request
+  # trips the internal hub's over-current protection which repeatedly drops the
+  # panda off USB during early boot (see disable_lte_modem).
+  threading.Thread(target=lte_modem_watchdog, daemon=True).start()
 
   count = 0
   first_run = True
@@ -97,13 +146,27 @@ def main() -> None:
 
       # Handle missing internal panda
       if no_internal_panda_count > 0:
-        if no_internal_panda_count == 3:
-          cloudlog.info("No pandas found, putting internal panda into DFU")
-          HARDWARE.recover_internal_panda()
+        # Early-boot window: the internal USB hub (100mA/port) is over its power
+        # budget because the LTE modem requests 500mA.  This trips the hub's
+        # over-current protection and the internal panda drops off the bus
+        # repeatedly for ~40s after boot.  Resetting the panda during this
+        # window only re-triggers the protection (each re-enumeration trips it
+        # again), so wait for the power to stabilize before resetting.
+        if system_uptime() < 45:
+          cloudlog.info(f"No pandas found {no_internal_panda_count} times during early boot, waiting for USB power to stabilize before resetting")
+          time.sleep(5)
+          # Do NOT reset during this window: resetting would re-trigger the hub
+          # over-current protection and make the panda drop off repeatedly.
+          # Fall through to the list below; if the panda becomes reachable
+          # again (USB power stabilized) we connect immediately.
         else:
-          cloudlog.info("No pandas found, resetting internal panda")
-          HARDWARE.reset_internal_panda()
-        time.sleep(3)  # wait to come back up
+          if no_internal_panda_count == 3:
+            cloudlog.info("No pandas found, putting internal panda into DFU")
+            HARDWARE.recover_internal_panda()
+          else:
+            cloudlog.info("No pandas found, resetting internal panda")
+            HARDWARE.reset_internal_panda()
+          time.sleep(3)  # wait to come back up
 
       # Flash all Pandas in DFU mode
       dfu_serials = PandaDFU.list()
