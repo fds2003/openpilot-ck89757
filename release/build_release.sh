@@ -2,9 +2,60 @@
 
 BUILD_DIR=/data/openpilot
 cd $BUILD_DIR
+
+# ---------------------------------------------------------------------------
+# Pre-flight.  This script rewrites git history (rm -rf .git), force-pushes the
+# egpucp branch and deletes the release/ directory that contains it, so make the
+# damage recoverable and keep the tree quiet while it runs:
+#   1. stop openpilot, otherwise updated/manager can touch the tree mid-publish
+#   2. back up .git and release/ before they are removed
+#   3. move pydeps out of the tree.  It is a ~190M runtime artifact that
+#      launch_chffrplus.sh rebuilds from the tracked third_party/wheels on the
+#      next boot.  git add -f . below ignores .gitignore and would commit it.
+#
+# Set SKIP_CONFIRM=1 to run unattended, GITCODE_TOKEN=xxx to avoid the
+# interactive credential prompt on push.
+# ---------------------------------------------------------------------------
+if [ -z "$SKIP_CONFIRM" ]; then
+  echo "This will: rm -rf .git, force-push branch egpucp to gitcode, delete release/."
+  read -r -p "Type yes to continue: " CONFIRM
+  if [ "$CONFIRM" != "yes" ]; then
+    echo "Aborted."
+    exit 1
+  fi
+fi
+
+echo "==> Stopping openpilot"
+pkill -f "[c]omma.sh" 2>/dev/null || true
+pkill -f "[l]aunch_chffrplus.sh" 2>/dev/null || true
+pkill -f "[m]anager.py" 2>/dev/null || true
+tmux kill-server 2>/dev/null || true
+sleep 2
+echo "    openpilot stopped"
+
+echo "==> Backing up .git and release/"
+BK="/data/pre_release_backup_$(date +%m%d_%H%M)"
+mkdir -p "$BK"
+cp -a "$BUILD_DIR/.git" "$BK/git"
+cp -a "$BUILD_DIR/release" "$BK/release"
+echo "    saved to $BK"
+
+echo "==> Moving pydeps out of the tree"
+if [ -d "$BUILD_DIR/pydeps" ]; then
+  rm -rf /data/pydeps_pub_keep
+  mv "$BUILD_DIR/pydeps" /data/pydeps_pub_keep
+  echo "    pydeps -> /data/pydeps_pub_keep (restored after publish)"
+fi
+
 rm -rf .git
 git init
 git remote add origin https://gitcode.com/fishop/openpilot.git
+
+# Optional token so the push does not prompt for credentials. It is stripped
+# from the remote again right after the push.
+if [ -n "$GITCODE_TOKEN" ]; then
+  git remote set-url origin "https://fishop:${GITCODE_TOKEN}@gitcode.com/fishop/openpilot.git"
+fi
 
 # in the directory
 cd $BUILD_DIR
@@ -55,3 +106,21 @@ git add -f .build_stamp
 git commit -m "${VERSION}-stamp"
 
 git push -f origin "egpucp"
+
+# ---------------------------------------------------------------------------
+# Post-publish: strip the token from the remote and restore local runtime deps.
+# ---------------------------------------------------------------------------
+if [ -n "$GITCODE_TOKEN" ]; then
+  git remote set-url origin https://gitcode.com/fishop/openpilot.git
+fi
+
+echo "==> Restoring pydeps"
+if [ -d /data/pydeps_pub_keep ]; then
+  mv /data/pydeps_pub_keep "$BUILD_DIR/pydeps"
+  echo "    pydeps restored"
+fi
+
+echo ""
+echo "Published branch egpucp to gitcode as $VERSION."
+echo "Pre-publish backup: $BK"
+echo "Now reboot to restart openpilot:  sudo reboot"
