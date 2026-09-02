@@ -1,7 +1,7 @@
 [
   {
     "name": "xbl",
-    "url": "https://commadist.azureedge.net/agnosupdate/xbl-e8acf2a9cc7f0ce84cb803bfea9477f765c0d7b4daf26048e59651b9e6a7bfbb.img.xz",
+    "url": "http://www.gitop.vip:82/agnos-19.6.3-carrot/xbl-e8acf2a9cc7f0ce84cb803bfea9477f765c0d7b4daf26048e59651b9e6a7bfbb.img.xz",
     "hash": "e8acf2a9cc7f0ce84cb803bfea9477f765c0d7b4daf26048e59651b9e6a7bfbb",
     "hash_raw": "e8acf2a9cc7f0ce84cb803bfea9477f765c0d7b4daf26048e59651b9e6a7bfbb",
     "size": 3282256,
@@ -12,7 +12,7 @@
   },
   {
     "name": "xbl_config",
-    "url": "https://commadist.azureedge.net/agnosupdate/xbl_config-758552ecf92b5569677197783bf0ccb73d7f961685308e45d3276ac9dd974f85.img.xz",
+    "url": "http://www.gitop.vip:82/agnos-19.6.3-carrot/xbl_config-758552ecf92b5569677197783bf0ccb73d7f961685308e45d3276ac9dd974f85.img.xz",
     "hash": "758552ecf92b5569677197783bf0ccb73d7f961685308e45d3276ac9dd974f85",
     "hash_raw": "758552ecf92b5569677197783bf0ccb73d7f961685308e45d3276ac9dd974f85",
     "size": 98124,
@@ -23,7 +23,7 @@
   },
   {
     "name": "abl",
-    "url": "https://commadist.azureedge.net/agnosupdate/abl-29fd7ed1c012e599420764840f9f11286d34dbff4adaf102a447f06d8c5e0b35.img.xz",
+    "url": "http://www.gitop.vip:82/agnos-19.6.3-carrot/abl-29fd7ed1c012e599420764840f9f11286d34dbff4adaf102a447f06d8c5e0b35.img.xz",
     "hash": "29fd7ed1c012e599420764840f9f11286d34dbff4adaf102a447f06d8c5e0b35",
     "hash_raw": "29fd7ed1c012e599420764840f9f11286d34dbff4adaf102a447f06d8c5e0b35",
     "size": 274432,
@@ -34,7 +34,7 @@
   },
   {
     "name": "aop",
-    "url": "https://commadist.azureedge.net/agnosupdate/aop-78b2287ca219a0811b3004c523fa0f4749e4d1fd92be3aba61699305b7943ad1.img.xz",
+    "url": "http://www.gitop.vip:82/agnos-19.6.3-carrot/aop-78b2287ca219a0811b3004c523fa0f4749e4d1fd92be3aba61699305b7943ad1.img.xz",
     "hash": "78b2287ca219a0811b3004c523fa0f4749e4d1fd92be3aba61699305b7943ad1",
     "hash_raw": "78b2287ca219a0811b3004c523fa0f4749e4d1fd92be3aba61699305b7943ad1",
     "size": 184364,
@@ -45,7 +45,7 @@
   },
   {
     "name": "devcfg",
-    "url": "https://commadist.azureedge.net/agnosupdate/devcfg-f71df3a86958c093ba3969254c4db025187eef9385427f1ade946742939b43cc.img.xz",
+    "url": "http://www.gitop.vip:82/agnos-19.6.3-carrot/devcfg-f71df3a86958c093ba3969254c4db025187eef9385427f1ade946742939b43cc.img.xz",
     "hash": "f71df3a86958c093ba3969254c4db025187eef9385427f1ade946742939b43cc",
     "hash_raw": "f71df3a86958c093ba3969254c4db025187eef9385427f1ade946742939b43cc",
     "size": 40336,
@@ -56,7 +56,7 @@
   },
   {
     "name": "boot",
-    "url": "https://github.com/ajouatom/agnos-builder/releases/download/agnos-19.6.3-carrot/boot-c3x-c4-303d797a55933dd634ecf5e16b5b9746e12528fa8d5919903aff7a0ae888cfcb.img.xz",
+    "url": "http://www.gitop.vip:82/agnos-19.6.3-carrot/boot-c3x-c4-303d797a55933dd634ecf5e16b5b9746e12528fa8d5919903aff7a0ae888cfcb.img.xz",
     "compressed_hash": "807239c4debfb14823fb443722711a730f1c696ed02202ae31c8563fdbf789af",
     "compressed_size": 14038484,
     "hash": "303d797a55933dd634ecf5e16b5b9746e12528fa8d5919903aff7a0ae888cfcb",
@@ -69,7 +69,7 @@
   },
   {
     "name": "system",
-    "url": "https://github.com/ajouatom/agnos-builder/releases/download/agnos-19.6.3-carrot/system-b97e492686fa3902b0385f13fa5663c911f0b150d06b722111d386f4ad42a7d7.img.xz",
+    "url": "http://www.gitop.vip:82/agnos-19.6.3-carrot/system-b97e492686fa3902b0385f13fa5663c911f0b150d06b722111d386f4ad42a7d7.img.xz",
     "compressed_hash": "57a1e8fbf72ba0608512b505075b03ce41a77427da7edb43e093ddb99f4bda60",
     "compressed_size": 1008228912,
     "hash": "ee1d82e325bfce8cc9c2fc1a509b65436830b9f34d3ee6568cf5345216d18c25",
