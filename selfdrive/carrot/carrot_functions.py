@@ -134,6 +134,10 @@ class CarrotPlanner:
     #new
     self.red_light_dist_offset = 0
 
+    # ★ 限速跳变检测（新增，解决下高速卡80）
+    self._last_v_cruise_kph = 0.0
+    self._speed_jump_threshold = 15.0
+
 
   def _params_update(self):
     self.frame += 1
@@ -331,6 +335,11 @@ class CarrotPlanner:
           v_cruise_kph_apply = self.eco_target_speed + self.eco_over_speed  # + 설정 속도로 설정함.
     else:
       self.eco_target_speed = 0
+
+    # ★ 限速跳变检测：导航限速突然下降 >15km/h，立即清零 eco 目标
+    if self._last_v_cruise_kph > 0 and (self._last_v_cruise_kph - v_cruise_kph) > self._speed_jump_threshold:
+      self.eco_target_speed = 0
+    self._last_v_cruise_kph = v_cruise_kph
 
     return v_cruise_kph_apply
 

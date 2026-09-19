@@ -21,6 +21,22 @@ LANE_SHRINK_MAX_SIDE = 0.32      # 单侧车道最大收缩宽度(m)
 STATIC_OBS_PRE_SHIFT_MAX = 0.45  # 路边静态障碍最大预偏移量(m)
 OBS_FILTER_ALPHA = 0.16          # 障碍物车道收缩平滑系数
 PATH_SHIFT_ALPHA = 0.12          # 静态障碍路径偏移平滑系数
+
+# ===== CD210 roadEdges 智能感知增强参数 =====
+ROAD_EDGE_PROB_THR = 0.30        # 路沿可信概率阈值
+ROAD_EDGE_SAFE_MARGIN = 0.18     # 路沿内侧安全距离(m)
+DEVIATION_NORM_THR = 0.82        # 归一化横向偏离阈值(|pos|>此值视为偏离)
+DEVIATION_CORRECT_STEP = 0.22    # 偏离时每帧往回拉量(m)
+NARROW_ROAD_RIGHT_TURN_MAX_Y = 1.5  # 右转窄路(双向两车道)最大末端偏出(m)
+ROADEDGE_CENTER_BLEND = 0.35     # 路口兜底：roadEdges中心混合比例
+TW_AVOID_SHIFT = 0.55            # 两轮车/行人独立避让偏移量(m,不被LaneOffset抵消)
+# ===========================================================
+
+OBSTACLE_MAX_LONG_DIST = 28.0    # 障碍物生效最大纵向距离
+LANE_SHRINK_MAX_SIDE = 0.32      # 单侧车道最大收缩宽度(m)
+STATIC_OBS_PRE_SHIFT_MAX = 0.45  # 路边静态障碍最大预偏移量(m)
+OBS_FILTER_ALPHA = 0.16          # 障碍物车道收缩平滑系数
+PATH_SHIFT_ALPHA = 0.12          # 静态障碍路径偏移平滑系数
 # ==================================================================
 
 def clamp(num, min_value, max_value):
@@ -86,6 +102,24 @@ class LanePlanner:
     self.closest_obs_long = float("inf")
     self.has_static_obstacle = False
     self.obs_lat_side = 0  # -1左障碍 / 0无 / 1右障碍
+    # ===== CD210 roadEdges 智能感知缓存 =====
+    self.road_edge_hard_limit_L = None   # 左侧路沿硬边界(y值)
+    self.road_edge_hard_limit_R = None   # 右侧路沿硬边界(y值)
+    self.deviation_correct = 0.0         # 当前帧偏离修正量(正=右拉/负=左拉)
+    self.two_wheel_avoid_shift = 0.0    # 两轮车/行人独立避让偏移(累加进path)
+    self.in_narrow_right_turn = False    # 是否处于窄路右转
+    # ===========================================
+
+    self.obstacle_avoid_scale = 1.0
+    self.obs_shrink_l_target = 0.0
+    self.obs_shrink_r_target = 0.0
+    self.obs_path_shift_target = 0.0
+    self.smooth_shrink_l = FirstOrderFilter(0.0, 1/OBS_FILTER_ALPHA, DT_MDL)
+    self.smooth_shrink_r = FirstOrderFilter(0.0, 1/OBS_FILTER_ALPHA, DT_MDL)
+    self.smooth_path_shift = FirstOrderFilter(0.0, 1/PATH_SHIFT_ALPHA, DT_MDL)
+    self.closest_obs_long = float("inf")
+    self.has_static_obstacle = False
+    self.obs_lat_side = 0  # -1左障碍 / 0无 / 1右障碍
     # ==============================================================
 
   def parse_model(self, md):
@@ -104,9 +138,20 @@ class LanePlanner:
     if len(edges[0].t) == TRAJECTORY_SIZE:
       self.le_y = np.array(edges[0].y) + md.roadEdgeStds[0] * 0.4
       self.re_y = np.array(edges[1].y) - md.roadEdgeStds[1] * 0.4
+      # ===== 缓存路沿硬边界(路沿内 safe_margin) =====
+      try:
+          self.road_edge_hard_limit_L = float(np.interp(0.0, np.array(edges[0].t), np.array(edges[0].y))) + ROAD_EDGE_SAFE_MARGIN
+          self.road_edge_hard_limit_R = float(np.interp(0.0, np.array(edges[1].t), np.array(edges[1].y))) - ROAD_EDGE_SAFE_MARGIN
+      except Exception:
+          self.road_edge_hard_limit_L = None
+          self.road_edge_hard_limit_R = None
+      # ==============================================
     else:
       self.le_y = self.lll_y
       self.re_y = self.rll_y
+      self.road_edge_hard_limit_L = None
+      self.road_edge_hard_limit_R = None
+
     desire_state = md.meta.desireState
     if len(desire_state):
       self.l_lane_change_prob = desire_state[log.Desire.laneChangeLeft]
@@ -165,6 +210,22 @@ class LanePlanner:
     self.smooth_shrink_l.update(self.obs_shrink_l_target)
     self.smooth_shrink_r.update(self.obs_shrink_r_target)
     self.smooth_path_shift.update(self.obs_path_shift_target)
+    # ===== 两轮车/行人独立避让偏移(不被 LaneOffset 向右抵消) =====
+    _tw_shift = 0.0
+    for obs in obstacle_list:
+        if obs.longDistance > OBSTACLE_MAX_LONG_DIST or obs.longDistance < 0.5:
+            continue
+        _d_lat = obs.latDistance
+        _o_type = obs.type
+        if _o_type not in ("motorcycle", "bicycle", "pedestrian"):
+            continue
+        # 右侧同车道(或贴边)的两轮车/行人 -> 强制向左避让
+        if -0.3 < _d_lat < 1.6:
+            _dist_w = clamp(1.0 - (obs.longDistance / OBSTACLE_MAX_LONG_DIST), 0.0, 1.0)
+            _tw_shift = min(_tw_shift + TW_AVOID_SHIFT * _dist_w, TW_AVOID_SHIFT)
+    self.two_wheel_avoid_shift = _tw_shift
+    # ===========================================================
+
 
   def get_d_path(self, CS, v_ego, path_t, path_xyz, curve_speed):
     #if v_ego > 0.1:
@@ -310,6 +371,78 @@ class LanePlanner:
         if safe_idxs[0]:
           lane_path_y_interp = np.interp(path_t * (1.0 + adjustLaneTime), self.ll_t[safe_idxs], lane_path_y[safe_idxs])
           path_xyz[:,1] = self.d_prob * lane_path_y_interp + (1.0 - self.d_prob) * path_xyz[:,1]
+    # ===== CD210 roadEdges 智能感知主逻辑 =====
+    _hard_L = self.road_edge_hard_limit_L
+    _hard_R = self.road_edge_hard_limit_R
+    _le_prob = 0.0
+    _re_prob = 0.0
+    try:
+        _le_prob = float(md.roadEdgeProbs[0]) if len(md.roadEdgeProbs) > 0 else 0.0
+    except Exception:
+        pass
+    try:
+        _re_prob = float(md.roadEdgeProbs[1]) if len(md.roadEdgeProbs) > 1 else 0.0
+    except Exception:
+        pass
+
+    # --- E1: 路沿硬边界约束(转弯遇绿化带/非机动车道不压线) ---
+    if _re_prob > ROAD_EDGE_PROB_THR and _hard_R is not None:
+        path_xyz[:, 1] = np.clip(path_xyz[:, 1], -4.0, _hard_R)
+    if _le_prob > ROAD_EDGE_PROB_THR and _hard_L is not None:
+        path_xyz[:, 1] = np.clip(path_xyz[:, 1], _hard_L, 4.0)
+
+    # --- E2: 偏离对向车道/路肩检测 + 修正 ---
+    _lane_w = max(self.lane_width, 2.6)
+    _y0 = float(path_xyz[0, 1])
+    _norm_pos = clamp(_y0 / (_lane_w / 2.0), -2.0, 2.0)
+    _ll_prob_now = self.lll_prob
+    _rl_prob_now = self.rll_prob
+    _corr = 0.0
+    if _norm_pos < -DEVIATION_NORM_THR and _ll_prob_now > ROAD_EDGE_PROB_THR:
+        _corr = DEVIATION_CORRECT_STEP   # 偏到对向 -> 每帧右拉回
+    elif _norm_pos > DEVIATION_NORM_THR and _rl_prob_now > ROAD_EDGE_PROB_THR:
+        _corr = -DEVIATION_CORRECT_STEP  # 偏到路肩 -> 每帧左拉回
+    self.deviation_correct = _corr
+    if _corr != 0.0:
+        path_xyz[:, 1] += _corr
+
+    # --- E3: 路口兜底(车道线淡出时以 roadEdges 中心为参考) ---
+    _lane_fade = (self.lll_prob < 0.35) or (self.rll_prob < 0.35)
+    if _lane_fade and _le_prob > ROAD_EDGE_PROB_THR and _re_prob > ROAD_EDGE_PROB_THR:
+        try:
+            _edge_L_y = np.array(edges[0].y)
+            _edge_R_y = np.array(edges[1].y)
+            _edge_center = (_edge_L_y + _edge_R_y) / 2.0
+            path_xyz[:, 1] = path_xyz[:, 1] * (1.0 - ROADEDGE_CENTER_BLEND) + _edge_center * ROADEDGE_CENTER_BLEND
+        except Exception:
+            pass
+
+    # --- E4: 窄路右转(双向两车道)防对向 + 两轮车独立避让 ---
+    # 通过外部(lateral_planner)写入 Params RightTurnEarly=1 表示右转激活
+    _rt_active = False
+    try:
+        from openpilot.common.params import Params as _P
+        _rt_active = bool(_P().get_bool("RightTurnEarly"))
+    except Exception:
+        pass
+    if _rt_active and _re_prob > ROAD_EDGE_PROB_THR:
+        # 右转窄路：末端偏出限幅 + 左侧车道线硬约束(防跑对向)
+        _end_y = float(path_xyz[-1, 1])
+        if _end_y > NARROW_ROAD_RIGHT_TURN_MAX_Y:
+            path_xyz[:, 1] -= (_end_y - NARROW_ROAD_RIGHT_TURN_MAX_Y) * np.linspace(0, 1, TRAJECTORY_SIZE)
+        # 左侧：以当前车道左线为硬约束，不越过左线(对向侧)
+        if _ll_prob_now > 0.4:
+            _left_bound = self.lll_y + 0.15
+            path_xyz[:, 1] = np.maximum(path_xyz[:, 1], _left_bound)
+        self.in_narrow_right_turn = True
+    else:
+        self.in_narrow_right_turn = False
+
+    # --- E5: 两轮车/行人独立避让偏移(累加，不被 LaneOffset 抵消) ---
+    if self.two_wheel_avoid_shift > 0.01:
+        path_xyz[:, 1] -= self.two_wheel_avoid_shift  # 向左避让
+    # ============================================================
+
     path_xyz[:, 1] += (CAMERA_OFFSET + self.lane_offset_filtered.x)
     self.offset_total = self.lane_offset_filtered.x
     return path_xyz, laneline_active

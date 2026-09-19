@@ -292,6 +292,14 @@ def manager_init() -> None:
   except PermissionError:
     print(f"WARNING: failed to make {Paths.shm_path()}")
 
+  # ===== 新增：清残留共享内存，防改文件后热重启报故障码 =====
+  # 解决"改任意文件重启 -> controlsd/modeld 读到旧 cereal shm 数据 ->
+  # MPC 首次求解异常 -> 报 Lateral/Steering Fault"这一全局竞态。
+  # manager_shm_patch.py 与本文件同目录（system/manager/）。
+  from manager_shm_patch import cleanup_shared_memory_on_start
+  cleanup_shared_memory_on_start()
+  # ===== 新增结束 =====
+
   # set params
   serial = HARDWARE.get_serial()
   params.put("Version", build_metadata.openpilot.version)

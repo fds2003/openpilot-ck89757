@@ -86,8 +86,12 @@ class Controls:
     driving_gear = CS.gearShifter not in (gear.neutral, gear.park, gear.reverse, gear.unknown)
     lateral_enabled = driving_gear
     standstill = abs(CS.vEgo) <= max(self.CP.minSteerSpeed, MIN_LATERAL_CONTROL_SPEED) or CS.standstill
+    # 红灯右转：停住+右灯 → 横向保持激活
+    if CS.rightBlinker and CS.standstill and CS.vEgo < 0.5:
+        standstill = False
     CC.latActive = ((self.sm['selfdriveState'].active or lateral_enabled) and CS.latEnabled and
                     not CS.steerFaultTemporary and not CS.steerFaultPermanent and not standstill)
+
     CC.longActive = CC.enabled and not any(e.overrideLongitudinal for e in self.sm['onroadEvents']) and self.CP.openpilotLongitudinalControl
 
     # ===================== 强制开启障碍物避让，不受ACC、自动油门状态限制 =====================

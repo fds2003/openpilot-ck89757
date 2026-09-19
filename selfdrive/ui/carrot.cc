@@ -25,6 +25,8 @@
 #define NANOVG_GLES3_IMPLEMENTATION
 #include <nanovg_gl.h>
 #include <nanovg_gl_utils.h>
+#pragma GCC diagnostic ignored "-Wunused-variable"
+
 
 #define COLOR_BLACK nvgRGBA(0, 0, 0, 255)
 #define COLOR_BLACK_ALPHA(x) nvgRGBA(0, 0, 0, x)
@@ -808,7 +810,8 @@ public:
 #endif
             }
             else if (xState == 4) {     //XState.e2ePrepare
-				      ui_draw_text(s, x, disp_y, "E2E주행중", disp_size, COLOR_WHITE, BOLD);
+				      ui_draw_text(s, x, disp_y, "E2E行驶中", disp_size, COLOR_WHITE, BOLD);
+
 			      }
             else if (xState == 0 || xState == 1 || xState == 2) {     //XState.lead
                 draw_dist = true;
@@ -1487,6 +1490,45 @@ protected:
         return true;
     }
 public:
+    void drawTextWithBg(NVGcontext *vg, float x, float y, const char *text, bool rightAlign)
+    {
+        float bounds[4];
+
+        nvgFontSize(vg, 50);
+        nvgTextAlign(vg, rightAlign ?
+                     (NVG_ALIGN_RIGHT | NVG_ALIGN_MIDDLE) :
+                     (NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE));
+
+        // 获取文字尺寸
+        nvgTextBounds(vg, x, y, text, nullptr, bounds);
+
+        float padding_x = 10;
+        float padding_y = 6;
+
+        float rect_x = bounds[0] - padding_x;
+        float rect_y = bounds[1] - padding_y;
+        float rect_w = bounds[2] - bounds[0] + padding_x * 2;
+        float rect_h = bounds[3] - bounds[1] + padding_y * 2;
+
+
+        // 半透明黑色背景
+        nvgBeginPath(vg);
+        nvgRoundedRect(vg,
+                       rect_x,
+                       rect_y,
+                       rect_w,
+                       rect_h,
+                       6);
+
+        nvgFillColor(vg, nvgRGBA(0, 0, 0, 150));   // alpha 150
+        nvgFill(vg);
+
+
+        // 绘制文字
+        nvgFillColor(vg, nvgRGB(255, 255, 0));
+        nvgText(vg, x, y, text, nullptr);
+    }
+
     void draw(const UIState* s,int show_lane_info) {
         if (!make_data(s)) return;
 
@@ -1497,14 +1539,22 @@ public:
         NVGcolor icon_color_red = nvgRGBA(255, 0, 0, 150); //红色
         NVGcolor icon_color_yellow = nvgRGBA(255, 215, 0, 150); //黄色
         NVGcolor icon_color_blue = nvgRGBA(0, 0, 255, 150); //蓝色
+        NVGcolor line_color_yellow = nvgRGBA(255, 255, 0, 255);
+        NVGcolor line_color_blue = nvgRGBA(0, 0, 255, 255); //蓝色
 
         // 绿色
-        NVGcolor color_green = nvgRGBA(0, 255, 0, 60);        // 绿色
-        NVGcolor icon_color_green = nvgRGBA(0, 255, 0, 150); // 绿色（图标）
+        //NVGcolor color_green = nvgRGBA(0, 255, 0, 60);        // 绿色
+        //NVGcolor icon_color_green = nvgRGBA(0, 255, 0, 150); // 绿色（图标）
 
         // 紫色
         NVGcolor color_purple = nvgRGBA(138, 43, 226, 60);        // 紫色（BlueViolet）
         NVGcolor icon_color_purple = nvgRGBA(138, 43, 226, 150); // 紫色（图标）
+
+        NVGcolor color_cyan = nvgRGBA(0, 255, 255, 60);        // 青色
+        //NVGcolor icon_color_cyan = nvgRGBA(0, 255, 255, 150); // 青色（图标）
+
+        NVGcolor color_pink = nvgRGBA(233, 37, 227, 60);        // 青色
+        NVGcolor icon_color_pink = nvgRGBA(233, 37, 227, 150); // 青色（图标）
 
         NVGcolor red_arrow_color = nvgRGBA(255, 0, 0, 200);
         NVGcolor yellow_arrow_color = nvgRGBA(255, 215, 0, 200);
@@ -1525,6 +1575,8 @@ public:
         auto amapNavi = sm["amapNavi"].getAmapNavi();
         int carrotLeftBlind = amapNavi.getLeftBlind();
         int carrotRightBlind = amapNavi.getRightBlind();
+        int leftDevice = amapNavi.getLeftDevice();
+        int rightDevice = amapNavi.getRightDevice();
 
         auto laneChangeState = meta.getLaneChangeState();
         auto laneChangeDirection = meta.getLaneChangeDirection();
@@ -1542,17 +1594,35 @@ public:
         left_blindspot = 1;
         right_blindspot = 1;
 #endif
+
         if(leftLaneChange || show_lane_info == 2){
             if (left_blindspot) {
                 ui_draw_bsd(s, lane_barrier_vertices[0], &color_red, false);
             }
             else if (carrotLeftBlind > 0) {
-                if(0 != (carrotLeftBlind & 8)){ //实线
+                #if 0
+                if((0 != (carrotLeftBlind & 8)) && (0 != (carrotLeftBlind & 1)) && (0 != (carrotLeftBlind & 2))){ //实线+激光雷达盲区+摄像头
+                    ui_draw_bsd(s, lane_barrier_vertices[0], &color_pink, false);
+                }else if((0 != (carrotLeftBlind & 8)) && (0 != (carrotLeftBlind & 1))){ //实线+激光雷达盲区
+                    ui_draw_bsd(s, lane_barrier_vertices[0], &color_cyan, false);
+                }else if(0 != (carrotLeftBlind & 8)){ //实线
                     ui_draw_bsd(s, lane_barrier_vertices[0], &color_green, false);
                 }else if(0 != (carrotLeftBlind & 2)){ //摄像头盲区
                     ui_draw_bsd(s, lane_barrier_vertices[0], &color_purple, false);
                 }else{ //激光雷达盲区
                     ui_draw_bsd(s, lane_barrier_vertices[0], &color_blue, false);
+                }
+                #endif
+                if((leftFrontBlind) && (0 != (carrotLeftBlind & 1)) && (0 != (carrotLeftBlind & 2))){ //原车前盲区+激光雷达盲区+摄像头
+                    ui_draw_bsd(s, lane_barrier_vertices[0], &color_pink, false);
+                }else if((leftFrontBlind) && (0 != (carrotLeftBlind & 1))){ //原车前盲区+激光雷达盲区
+                    ui_draw_bsd(s, lane_barrier_vertices[0], &color_cyan, false);
+                }else if(0 != (carrotLeftBlind & 2)){ //摄像头盲区
+                    ui_draw_bsd(s, lane_barrier_vertices[0], &color_purple, false);
+                }else if(0 != (carrotLeftBlind & 1)){ //激光雷达盲区
+                    ui_draw_bsd(s, lane_barrier_vertices[0], &color_blue, false);
+                }else if(leftFrontBlind){ //原车前盲区
+                    ui_draw_bsd(s, lane_barrier_vertices[0], &color_yellow, false);
                 }
             }
             else if (leftFrontBlind) {
@@ -1565,12 +1635,29 @@ public:
                 ui_draw_bsd(s, lane_barrier_vertices[1], &color_red, true);
             }
             else if (carrotRightBlind > 0) {
-                if(0 != (carrotRightBlind & 8)){ //实线
+                #if 0
+                if((0 != (carrotRightBlind & 8)) && (0 != (carrotRightBlind & 1)) && (0 != (carrotRightBlind & 2))){ //实线+激光雷达盲区+摄像头
+                    ui_draw_bsd(s, lane_barrier_vertices[1], &color_pink, true);
+                }else if((0 != (carrotRightBlind & 8)) && (0 != (carrotRightBlind & 1))){ //实线+激光雷达盲区
+                  ui_draw_bsd(s, lane_barrier_vertices[1], &color_cyan, true);
+                }else if(0 != (carrotRightBlind & 8)){ //实线
                     ui_draw_bsd(s, lane_barrier_vertices[1], &color_green, true);
                 }else if(0 != (carrotRightBlind & 2)){ //摄像头盲区
                     ui_draw_bsd(s, lane_barrier_vertices[1], &color_purple, true);
                 }else{ //激光雷达盲区
                     ui_draw_bsd(s, lane_barrier_vertices[1], &color_blue, true);
+                }
+                #endif
+                if((rightFrontBlind) && (0 != (carrotRightBlind & 1)) && (0 != (carrotRightBlind & 2))){ //原车前盲区+激光雷达盲区+摄像头
+                    ui_draw_bsd(s, lane_barrier_vertices[1], &color_pink, true);
+                }else if((rightFrontBlind) && (0 != (carrotRightBlind & 1))){ //原车前盲区+激光雷达盲区
+                    ui_draw_bsd(s, lane_barrier_vertices[1], &color_cyan, true);
+                }else if(0 != (carrotRightBlind & 2)){ //摄像头盲区
+                    ui_draw_bsd(s, lane_barrier_vertices[1], &color_purple, true);
+                }else if(0 != (carrotRightBlind & 1)){ //激光雷达盲区
+                    ui_draw_bsd(s, lane_barrier_vertices[1], &color_blue, true);
+                }else if(rightFrontBlind){ //原车前盲区
+                    ui_draw_bsd(s, lane_barrier_vertices[1], &color_yellow, true);
                 }
             }
             else if (rightFrontBlind){
@@ -1583,16 +1670,12 @@ public:
         int vertical_spacing = 100;
         int horizontal_offset = 150;
         int top_y = 10;
-        int arrow_body_width = 22;
-        int arrow_body_length = 23;
         int arrow_head_width = 46;
-        int arrow_head_length = 19;
-
-        // 计算整个箭头的总长度
-        int total_arrow_length = arrow_body_length + arrow_head_length;
+        int arrow_head_length = 30;
         bool icon_show = false;
 
         // 左侧圆形和向左箭头(从上到下)
+        //原车前雷达盲区图标绘制
         icon_show = false;
         if (leftFrontBlind) {
             int cx = center_x - horizontal_offset;
@@ -1603,15 +1686,11 @@ public:
             nvgFill(s->vg);
             if(show_lane_info >= 1)
             {
+                // 中心向上的三角箭头
                 nvgBeginPath(s->vg);
-                nvgRect(s->vg, cx - total_arrow_length/2 + arrow_head_length, cy - arrow_body_width/2,
-                        arrow_body_length, arrow_body_width);
-                nvgFillColor(s->vg, red_arrow_color);
-                nvgFill(s->vg);
-                nvgBeginPath(s->vg);
-                nvgMoveTo(s->vg, cx - total_arrow_length/2, cy);
-                nvgLineTo(s->vg, cx - total_arrow_length/2 + arrow_head_length, cy - arrow_head_width/2);
-                nvgLineTo(s->vg, cx - total_arrow_length/2 + arrow_head_length, cy + arrow_head_width/2);
+                nvgMoveTo(s->vg, cx, cy - arrow_head_length / 2);// 顶点（朝上）
+                nvgLineTo(s->vg, cx - arrow_head_width / 2, cy + arrow_head_length / 2);// 左下角
+                nvgLineTo(s->vg, cx + arrow_head_width / 2, cy + arrow_head_length / 2);// 右下角
                 nvgClosePath(s->vg);
                 nvgFillColor(s->vg, red_arrow_color);
                 nvgFill(s->vg);
@@ -1628,15 +1707,11 @@ public:
             nvgFill(s->vg);
             if(show_lane_info >= 1)
             {
+                // 中心向上的三角箭头
                 nvgBeginPath(s->vg);
-                nvgRect(s->vg, cx - total_arrow_length/2, cy - arrow_body_width/2,
-                        arrow_body_length, arrow_body_width);
-                nvgFillColor(s->vg, red_arrow_color);
-                nvgFill(s->vg);
-                nvgBeginPath(s->vg);
-                nvgMoveTo(s->vg, cx + total_arrow_length/2, cy);
-                nvgLineTo(s->vg, cx + total_arrow_length/2 - arrow_head_length, cy - arrow_head_width/2);
-                nvgLineTo(s->vg, cx + total_arrow_length/2 - arrow_head_length, cy + arrow_head_width/2);
+                nvgMoveTo(s->vg, cx, cy - arrow_head_length / 2);// 顶点（朝上）
+                nvgLineTo(s->vg, cx - arrow_head_width / 2, cy + arrow_head_length / 2);// 左下角
+                nvgLineTo(s->vg, cx + arrow_head_width / 2, cy + arrow_head_length / 2);// 右下角
                 nvgClosePath(s->vg);
                 nvgFillColor(s->vg, red_arrow_color);
                 nvgFill(s->vg);
@@ -1650,75 +1725,107 @@ public:
             top_y += vertical_spacing;
         }
 
-        icon_show = false;
-        if (carrotLeftBlind > 0) {
+        int lfDrelValid = amapNavi.getLfDrelValid();
+        int lbDrelValid = amapNavi.getLbDrelValid();
+        int rfDrelValid = amapNavi.getRfDrelValid();
+        int rbDrelValid = amapNavi.getRbDrelValid();
+        float lfDrel = (float)amapNavi.getLfDrel()/10;
+        float lbDrel = (float)amapNavi.getLbDrel()/10;
+        float rfDrel = (float)amapNavi.getRfDrel()/10;
+        float rbDrel = (float)amapNavi.getRbDrel()/10;
+
+        //TEST
+#if 0
+        lfDrelValid = 1;
+        lbDrelValid = 1;
+        rfDrelValid = 1;
+        rbDrelValid = 1;
+        lfDrel = 100.1;
+        lbDrel = -99.5;
+        rfDrel = 45.1;
+        rbDrel = -67.2;
+#endif
+        //TEST
+
+        // 左侧距离显示
+        if(lfDrelValid || lbDrelValid)
+        {
             int cx = center_x - horizontal_offset;
-            int cy = top_y + circle_radius;  // 保持在中间
-            nvgBeginPath(s->vg);
-            nvgCircle(s->vg, cx, cy, circle_radius);
-            if(0 != (carrotLeftBlind & 8)){ //实线
-                nvgFillColor(s->vg, icon_color_green);
-            }else if(0 != (carrotLeftBlind & 2)){ //摄像头盲区
-                nvgFillColor(s->vg, icon_color_purple);
-            }else{ //激光雷达盲区
-                nvgFillColor(s->vg, icon_color_blue);
-            }
-            nvgFill(s->vg);
-            if(show_lane_info >= 1)
-            {
-                nvgBeginPath(s->vg);
-                nvgRect(s->vg, cx - total_arrow_length/2 + arrow_head_length, cy - arrow_body_width/2,
-                        arrow_body_length, arrow_body_width);
-                nvgFillColor(s->vg, red_arrow_color);
-                nvgFill(s->vg);
-                nvgBeginPath(s->vg);
-                nvgMoveTo(s->vg, cx - total_arrow_length/2, cy);
-                nvgLineTo(s->vg, cx - total_arrow_length/2 + arrow_head_length, cy - arrow_head_width/2);
-                nvgLineTo(s->vg, cx - total_arrow_length/2 + arrow_head_length, cy + arrow_head_width/2);
-                nvgClosePath(s->vg);
-                nvgFillColor(s->vg, red_arrow_color);
-                nvgFill(s->vg);
-            }
+            int cy = top_y + circle_radius;
 
-            icon_show = true;
+            char text[16];
+            // 文字在圆左侧
+            float text_x = cx - circle_radius - 30;
+            float text_offset_y = 35;   // 上下偏移距离
+            nvgFontSize(s->vg, 50);
+            nvgFillColor(s->vg, nvgRGB(255, 255, 0));
+            // 靠右对齐，文字靠近圆
+            nvgTextAlign(s->vg, NVG_ALIGN_RIGHT | NVG_ALIGN_MIDDLE);
+            // lfDrel 上面
+            if(lfDrelValid)
+            {
+                snprintf(text, sizeof(text), "%.1f", lfDrel);
+                drawTextWithBg(s->vg,
+                               text_x,
+                               cy - text_offset_y,
+                               text,
+                               true);
+            }
+            // lbDrel 下面
+            if(lbDrelValid)
+            {
+                snprintf(text, sizeof(text), "%.1f", lbDrel);
+                drawTextWithBg(s->vg,
+                               text_x,
+                               cy + text_offset_y,
+                               text,
+                               true);
+            }
         }
-        if (carrotRightBlind > 0) {
+
+        // 右侧距离显示
+        if(rfDrelValid || rbDrelValid)
+        {
             int cx = center_x + horizontal_offset;
-            int cy = top_y + circle_radius;  // 保持在中间
-            nvgBeginPath(s->vg);
-            nvgCircle(s->vg, cx, cy, circle_radius);
-            if(0 != (carrotRightBlind & 8)){ //实线
-                nvgFillColor(s->vg, icon_color_green);
-            }else if(0 != (carrotRightBlind & 2)){ //摄像头盲区
-                nvgFillColor(s->vg, icon_color_purple);
-            }else{ //激光雷达盲区
-                nvgFillColor(s->vg, icon_color_blue);
-            }
-            nvgFill(s->vg);
-            if(show_lane_info >= 1)
+            int cy = top_y + circle_radius;
+            char text[16];
+            // 文字在圆右侧
+            float text_x = cx + circle_radius + 30;
+            float text_offset_y = 35;
+            nvgFontSize(s->vg, 50);
+            nvgFillColor(s->vg, nvgRGB(255, 255, 0));
+            nvgTextAlign(s->vg, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
+            // rfDrel 上面
+            if(rfDrelValid)
             {
-                nvgBeginPath(s->vg);
-                nvgRect(s->vg, cx - total_arrow_length/2, cy - arrow_body_width/2,
-                        arrow_body_length, arrow_body_width);
-                nvgFillColor(s->vg, red_arrow_color);
-                nvgFill(s->vg);
-                nvgBeginPath(s->vg);
-                nvgMoveTo(s->vg, cx + total_arrow_length/2, cy);
-                nvgLineTo(s->vg, cx + total_arrow_length/2 - arrow_head_length, cy - arrow_head_width/2);
-                nvgLineTo(s->vg, cx + total_arrow_length/2 - arrow_head_length, cy + arrow_head_width/2);
-                nvgClosePath(s->vg);
-                nvgFillColor(s->vg, red_arrow_color);
-                nvgFill(s->vg);
+                snprintf(text, sizeof(text), "%.1f", rfDrel);
+                drawTextWithBg(s->vg,
+                               text_x,
+                               cy - text_offset_y,
+                               text,
+                               false);
             }
-
-            icon_show = true;
+            // rbDrel 下面
+            if(rbDrelValid)
+            {
+                snprintf(text, sizeof(text), "%.1f", rbDrel);
+                drawTextWithBg(s->vg,
+                               text_x,
+                               cy + text_offset_y,
+                               text,
+                               false);
+            }
         }
+
+        // ★★★ 激光雷达圆形图案、圆形蓝色边、黄色粗实线已全部注销 ★★★
+        // ★★★ 仅保留雷达参数左右显示（见上方 lfDrelValid/rfDrelValid 代码）★★★
 
         icon_show = true;
         if(icon_show){
             top_y += vertical_spacing;
         }
 
+        //原车后盲区图标绘制
         icon_show = false;
         if (left_blindspot) {
             int cx = center_x - horizontal_offset;
@@ -1729,15 +1836,11 @@ public:
             nvgFill(s->vg);
             if(show_lane_info >= 1)
             {
+                // 中心向下的三角箭头
                 nvgBeginPath(s->vg);
-                nvgRect(s->vg, cx - total_arrow_length/2 + arrow_head_length, cy - arrow_body_width/2,
-                        arrow_body_length, arrow_body_width);
-                nvgFillColor(s->vg, yellow_arrow_color);
-                nvgFill(s->vg);
-                nvgBeginPath(s->vg);
-                nvgMoveTo(s->vg, cx - total_arrow_length/2, cy);
-                nvgLineTo(s->vg, cx - total_arrow_length/2 + arrow_head_length, cy - arrow_head_width/2);
-                nvgLineTo(s->vg, cx - total_arrow_length/2 + arrow_head_length, cy + arrow_head_width/2);
+                nvgMoveTo(s->vg, cx, cy + arrow_head_length / 2);// 顶点（朝下）
+                nvgLineTo(s->vg, cx - arrow_head_width / 2, cy - arrow_head_length / 2);// 左上角
+                nvgLineTo(s->vg, cx + arrow_head_width / 2, cy - arrow_head_length / 2);// 右上角
                 nvgClosePath(s->vg);
                 nvgFillColor(s->vg, yellow_arrow_color);
                 nvgFill(s->vg);
@@ -1754,15 +1857,11 @@ public:
             nvgFill(s->vg);
             if(show_lane_info >= 1)
             {
+                // 中心向下的三角箭头
                 nvgBeginPath(s->vg);
-                nvgRect(s->vg, cx - total_arrow_length/2, cy - arrow_body_width/2,
-                        arrow_body_length, arrow_body_width);
-                nvgFillColor(s->vg, yellow_arrow_color);
-                nvgFill(s->vg);
-                nvgBeginPath(s->vg);
-                nvgMoveTo(s->vg, cx + total_arrow_length/2, cy);
-                nvgLineTo(s->vg, cx + total_arrow_length/2 - arrow_head_length, cy - arrow_head_width/2);
-                nvgLineTo(s->vg, cx + total_arrow_length/2 - arrow_head_length, cy + arrow_head_width/2);
+                nvgMoveTo(s->vg, cx, cy + arrow_head_length / 2);// 顶点（朝下）
+                nvgLineTo(s->vg, cx - arrow_head_width / 2, cy - arrow_head_length / 2);// 左上角
+                nvgLineTo(s->vg, cx + arrow_head_width / 2, cy - arrow_head_length / 2);// 右上角
                 nvgClosePath(s->vg);
                 nvgFillColor(s->vg, yellow_arrow_color);
                 nvgFill(s->vg);
@@ -2013,6 +2112,7 @@ protected:
             show_path_color = show_path_color_cruise_off;
         }
 
+        // ---- 先按当前路径模式填充 track_vertices（延伸到 horizon）----
         if (show_path_mode == 0) {
             update_line_data2(s, model_position, show_path_width, 1.22, 1.22, &track_vertices, max_idx);
         }
@@ -2022,9 +2122,101 @@ protected:
         else
             update_line_data_dist3(s, model_position, show_path_width, 1.22, 1.22, &track_vertices, max_distance, false);
 
+        // ---- [DP] 大佬彩虹路径条：开关开启时画彩虹并跳过普通路径条 ----
+        if (params.getBool("dp_ui_rainbow")) {
+            drawRainbowPath(s);
+            return true;
+        }
+
         return true;
     }
     int use_lane_line_speed_apply = 0;
+    //##################### [DP] 大佬彩虹路径条 #####################
+    float rainbow_time_acc = 0.0f;
+    NVGcolor _rainbow_hsv2rgb(float h, float s, float v, float a) {
+        float r, g, b;
+        int hi = (int)(h * 6.0f) % 6;
+        float f = h * 6.0f - (float)hi;
+        float p = v * (1.0f - s);
+        float q = v * (1.0f - f * s);
+        float t = v * (1.0f - (1.0f - f) * s);
+        switch (hi) {
+            case 0: r = v; g = t; b = p; break;
+            case 1: r = q; g = v; b = p; break;
+            case 2: r = p; g = v; b = t; break;
+            case 3: r = p; g = q; b = v; break;
+            case 4: r = t; g = p; b = v; break;
+            default: r = v; g = p; b = q; break;
+        }
+        return nvgRGBA((int)(r * 255), (int)(g * 255), (int)(b * 255), (int)(a * 255));
+    }
+
+    void drawRainbowPath(const UIState* s) {
+        if (track_vertices.size() < 4) return;
+        NVGcontext* vg = s->vg;
+        const int N = track_vertices.size();
+        const int half = N / 2;
+        if (half < 2) return;
+
+        // ---- 参数 ----
+        float scroll = params.getFloat("dp_rainbow_scroll_speed");
+        if (scroll <= 0.0f) scroll = 4.0f;
+
+        // ---- 取车速 ----
+        SubMaster& sm = *(s->sm);
+        float v_ego = 0;
+        if (sm.alive("carState")) {
+            v_ego = sm["carState"].getCarState().getVEgo();
+        }
+        if (v_ego < 0) v_ego = 0;
+
+        // ---- 动态相位：时间慢滚 + 车速加成 ----
+        static float phase = 0;
+        phase += 0.016f * scroll * 0.05f + v_ego * 0.004f * (scroll / 4.0f);
+        phase = fmodf(phase, 1.0f);
+        if (phase < 0.0f) phase += 1.0f;
+
+        int alpha = params.getInt("dp_rainbow_alpha");
+        if (alpha <= 0) alpha = 150;
+        if (alpha > 255) alpha = 255;
+        const float a = (float)alpha / 255.0f;
+
+        // ---- 逐段绘制，段内渐变 (周期 0.8 降低密度) ----
+        for (int i = 0; i < half - 1; i++) {
+            const QPointF& L0 = track_vertices[i];
+            const QPointF& R0 = track_vertices[N - 1 - i];
+            const QPointF& L1 = track_vertices[i + 1];
+            const QPointF& R1 = track_vertices[N - 1 - (i + 1)];
+
+            float t0 = (float)i / (float)(half - 1);
+            float t1 = (float)(i + 1) / (float)(half - 1);
+            float h0 = fmodf(phase + t0 * 0.8f, 1.0f);
+            float h1 = fmodf(phase + t1 * 0.8f, 1.0f);
+
+            NVGcolor c0 = _rainbow_hsv2rgb(h0, 1.0f, 1.0f, a);
+            NVGcolor c1 = _rainbow_hsv2rgb(h1, 1.0f, 1.0f, a);
+
+            float cx0 = (L0.x() + R0.x()) / 2.0f;
+            float cy0 = (L0.y() + R0.y()) / 2.0f;
+            float cx1 = (L1.x() + R1.x()) / 2.0f;
+            float cy1 = (L1.y() + R1.y()) / 2.0f;
+            NVGpaint grad = nvgLinearGradient(vg, cx0, cy0, cx1, cy1, c0, c1);
+
+            nvgBeginPath(vg);
+            nvgMoveTo(vg, L0.x(), L0.y());
+            nvgLineTo(vg, R0.x(), R0.y());
+            nvgLineTo(vg, R1.x(), R1.y());
+            nvgLineTo(vg, L1.x(), L1.y());
+            nvgClosePath(vg);
+
+            nvgFillPaint(vg, grad);
+            nvgFill(vg);
+        }
+    }
+
+    //##################### [DP] 大佬彩虹路径条 #####################
+
+
 public:
     void draw(const UIState* s, float& pathDrawSeq) {
         SubMaster& sm = *(s->sm);
@@ -2077,6 +2269,8 @@ public:
             show_path_color = 13; // 巡航关闭时也显示绿色（或者你想设为黑色19也可以）
         }
 
+        // ---- 普通路径条：开启彩虹时隐藏，只显示彩虹路径条 ----
+        if (!params.getBool("dp_ui_rainbow")) {
         if (show_path_mode == 0) {
             ui_draw_line(s, track_vertices, &colors[show_path_color % 10], nullptr,
                 (show_path_color >= 10 || brake_valid) ? 2.0 : 0.0,
@@ -2091,6 +2285,10 @@ public:
         else {
             drawAnimatedPath(s, car_state, pathDrawSeq, forward, show_path_mode, show_path_color, brake_valid, colors);
         }
+        } // end: dp_ui_rainbow == 0
+
+        // ★★★ 独立蓝色路径条已注销：不再绘制独立蓝色转向参考线 ★★★
+
     }
 
 private:
@@ -2149,7 +2347,6 @@ private:
                 brake_valid ? COLOR_RED : COLOR_WHITE);
         }
     }
-
     void drawComplexPath(const UIState* s, int color_idx, bool brake_valid,
         NVGcolor* colors) {
         int track_vertices_len = track_vertices.length();
@@ -2303,9 +2500,11 @@ protected:
     Params	params;
     Params	params_memory{ "/dev/shm/params" };
     int     icon_size = 256;
+
 public:
     DrawCarrot() {
     }
+
     float   v_cruise = 0.0;
     float   v_ego = 0.0;
     float   apply_speed = 250.0;
@@ -2315,6 +2514,11 @@ public:
     int     xState = 0;
     int     trafficState = 0;
     int     trafficState_carrot = 0;
+    int     xDistToTurn = 0;
+    QString tl_reason = "default";
+
+
+
     int     active_carrot = 0;
     float   cruiseTarget = 0.0;
     int     myDrivingMode = 1;
@@ -2369,6 +2573,11 @@ public:
             nGoPosDist = carrot_man.getNGoPosDist();
             QString atcType = QString::fromStdString(carrot_man.getAtcType());
             trafficState_carrot = carrot_man.getTrafficState();
+            tl_reason = QString::fromStdString(params_memory.get("tl_reason"));
+            if (tl_reason.isEmpty()) tl_reason = "default";
+
+            xDistToTurn = carrot_man.getXDistToTurn();
+
             const auto velocity = model.getVelocity();
 
             if (nav_path_display) {
@@ -2675,20 +2884,22 @@ public:
         }
 
 
-        // draw traffic light
+        // draw traffic light（快到路口才显示：距离门控）
         int icon_red = icon_size;
         int icon_green = icon_size;
-        bool red_light = trafficState == 1;
-        bool green_light = trafficState == 2;
+        bool red_light = trafficState == 1 || trafficState_carrot == 1;
+        bool green_light = trafficState == 2 || trafficState_carrot == 2;
 
-        if(trafficState_carrot == 1) {
-			red_light = true;
-            icon_red *= 1.5;
-		}
-		else if(trafficState_carrot == 2) {
-			green_light = true;
-            icon_green *= 1.5;
-		}
+        // ★ 距离门控：有转弯距离且确实很远(≥100m)才抑制显示；
+        //   xDistToTurn==0 表示直行红绿灯/无导航，此时不抑制，交回摄像头 trafficState 驱动
+        //   （摄像头近路口才触发、过路口归零 → 天然"快到显示/过路口消失"）。
+        const float TRAFFIC_LIGHT_SHOW_DIST = 100.0f;
+        bool far_from_turn = (xDistToTurn > 0) && ((float)xDistToTurn >= TRAFFIC_LIGHT_SHOW_DIST);
+        if (far_from_turn) {
+            red_light = false;
+            green_light = false;
+        }
+
         if (red_light) ui_draw_image(s, { x - icon_red / 2, y - icon_red / 2 + 270, icon_red, icon_red }, "ic_traffic_red", 1.0f);
         else if (green_light) ui_draw_image(s, { x - icon_green / 2, y - icon_green / 2 + 270, icon_green, icon_green }, "ic_traffic_green", 1.0f);
 
@@ -3219,10 +3430,11 @@ void ui_draw(UIState *s, ModelRenderer* model_renderer, int w, int h) {
     drawCarrot.drawRadarInfo(s);
 
   drawCarrot.drawHud(s);
+
   // --- 右侧红绿灯（逻辑不变，只换漂亮绘制）---
   NVGcontext* vg = s->vg;
   float x = 1940.0f;
-  float y = 450.0f;
+  float y = 460.0f;
   float icon_size = 120.0f;
 
   // ======================
@@ -3231,6 +3443,10 @@ void ui_draw(UIState *s, ModelRenderer* model_renderer, int w, int h) {
   bool red_light = drawCarrot.trafficState == 1 || drawCarrot.trafficState_carrot == 1;
   bool green_light = drawCarrot.trafficState == 2 || drawCarrot.trafficState_carrot == 2;
 
+  // ★ 距离门控：有转弯距离且很远(≥100m)才隐藏；直行红绿灯(xDistToTurn==0)/无导航时按摄像头显示
+  bool show_tl_icon = !((drawCarrot.xDistToTurn > 0) && ((float)drawCarrot.xDistToTurn >= 100.0f));
+
+  if (show_tl_icon) {
   // 黑底白边（保留你原来样式）
   nvgBeginPath(vg);
   nvgRoundedRect(vg, x, y, icon_size, icon_size*1.8, 16.0f);
@@ -3276,13 +3492,8 @@ void ui_draw(UIState *s, ModelRenderer* model_renderer, int w, int h) {
     nvgFillColor(vg, nvgRGBA(80,80,80,255));
     nvgFill(vg);
   }
-  // ============== 暴力测试：直接写死数字 888，黄色，超大号 ==============
-  nvgFontSize(vg, 150.0f);  // 字号拉满，绝对能看到
-  nvgFontFace(vg, "sans");
-  nvgFillColor(vg, nvgRGBA(255, 255, 0, 255));  // 亮黄色，最醒目
-  // 直接画在屏幕正中间，坐标(960, 540)，1080P屏幕正中心
-  nvgText(vg, 960.0f, 540.0f, "888", nullptr);
-  // ============== 测试代码结束 ==============
+  }
+
   drawCarrot.drawDebug(s);
   //drawCarrot.drawDateTime(s);
   //drawCarrot.drawConnInfo(s);
@@ -3381,6 +3592,9 @@ public:
         auto car_state = sm["carState"].getCarState();
         float a_ego = car_state.getAEgo();
 
+        auto controls_state = sm["controlsState"].getControlsState();
+        float liveSR = controls_state.getLiveSR();
+
         a_ego_width = a_ego_width * 0.5 + (w * std::abs(a_ego) / 4.0) * 0.5;
         ui_fill_rect(vg, { w/2 - (int)(a_ego_width / 2), h - 30, (int)a_ego_width, 30 }, (a_ego >= 0)? COLOR_YELLOW : COLOR_RED, 15);
 
@@ -3411,7 +3625,7 @@ public:
             (float)live_delay.getCalPerc(), live_delay.getLateralDelay(),
             (float)live_torque_params.getCalPerc(), live_torque_params.getLiveValid() ? "ON" : "OFF",
             live_torque_params.getLatAccelFactorFiltered(), live_torque_params.getFrictionCoefficientFiltered(),
-            live_params.getSteerRatio(), params.getFloat("CustomSR")/10.0,
+            live_params.getSteerRatio(), liveSR, //params.getFloat("CustomSR")/10.0,
             live_params.getAngleOffsetAverageDeg(),
             live_params.getAngleOffsetDeg());
         sprintf(top_right, "%s", str.toStdString().c_str());

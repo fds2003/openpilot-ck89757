@@ -190,6 +190,18 @@ class CarState(CarStateBase):
 
       ret.buttonEvents = create_button_events(self.distance_button, prev_distance_button, {1: ButtonType.gapAdjustCruise})
 
+    # ===== 回灌 carrot_serv 打灯请求为虚拟 blinker（blinker patch）=====
+    try:
+      from openpilot.selfdrive.carrot.carrot_serv import get_carrot_serv_instance
+      _cs = get_carrot_serv_instance()
+      if _cs is not None and _cs.ext_blinker in (1, 2):
+        if _cs.ext_blinker == 1:
+          ret.leftBlinker = True
+        else:
+          ret.rightBlinker = True
+    except Exception:
+      pass
+
     return ret
 
   @staticmethod

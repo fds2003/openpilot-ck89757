@@ -28,6 +28,31 @@ MAX_STEER_RATE = 100
 MAX_STEER_RATE_FRAMES = 18
 MAX_USER_TORQUE = 500
 
+# ============ 转向控制：低速 / 高速隔离策略 ============
+# 核心思想：低速（掉头/窄路/停车）要"敢打"，放开增益与补偿、几乎不保护；
+#          高速（变道/弯道）要"稳"，启用增益上限 + 角度误差保护，防止 EPS 过热/故障。
+# 两段之间用 [LOW_SPEED_MAX, HIGH_SPEED_MIN] 区间平滑过渡，避免跨阈值突变。
+#
+# 低速段参数（< LOW_SPEED_MAX，默认 30 km/h）
+LOW_SPEED_MAX = 30.0         # 低速段上界 (km/h)
+LOW_GAIN = 1.12             # 低速扭矩增益（固定值，比高速更猛）
+LOW_ANGLE_BOOST = 1.20      # 低速角度放大倍数（更大）
+LOW_RIGHT_COMP = 4.0        # 低速右转补偿量 (deg)（更大）
+LOW_ERR_PROTECT = 20.0      # 低速角度误差保护阈值 (deg)（几乎不触发）
+#
+# 高速段参数（> HIGH_SPEED_MIN，默认 50 km/h）
+HIGH_SPEED_MIN = 50.0       # 高速段下界 (km/h)
+HIGH_GAIN = 1.06            # 高速扭矩增益（固定值，更稳）
+HIGH_ANGLE_BOOST = 1.10     # 高速角度放大倍数（收敛）
+HIGH_RIGHT_COMP = 2.0       # 高速右转补偿量 (deg)（收敛）
+HIGH_ERR_PROTECT = 10.0     # 高速角度误差保护阈值 (deg)（及时保护）
+#
+# 通用
+RIGHT_TURN_THRESHOLD = 6.0   # 右转补偿触发阈值 (deg)，高低速共用
+MAX_STEER_GAIN = 1.25        # 扭矩增益硬上限（最后兜底）
+# ======================================================
+
+
 def get_long_tune(CP, params):
   if CP.carFingerprint in TSS2_CAR:
     kiBP = [2., 5.]
@@ -38,6 +63,7 @@ def get_long_tune(CP, params):
   return PIDController(0.0, (kiBP, kiV), k_f=1.0,
                        pos_limit=params.ACCEL_MAX, neg_limit=params.ACCEL_MIN,
                        rate=1 / (DT_CTRL * 3))
+
 
 class CarController(CarControllerBase):
   def __init__(self, dbc_names, CP):
@@ -60,6 +86,8 @@ class CarController(CarControllerBase):
     self.secoc_lka_message_counter = 0
     self.secoc_lta_message_counter = 0
     self.secoc_prev_reset_counter = 0
+    # 注意：实际项目中 secoc_key 通常由更上层注入，这里保留占位以匹配原分支行为
+    self.secoc_key = getattr(CP, 'secocKey', b'')
 
   def update(self, CC, CS, now_nanos):
     actuators = CC.actuators
@@ -80,39 +108,63 @@ class CarController(CarControllerBase):
     self.params.STEER_DELTA_UP = self.params.STEER_DELTA_UP if steerDeltaUp <= 0 else steerDeltaUp
     self.params.STEER_DELTA_DOWN = self.params.STEER_DELTA_DOWN if steerDeltaDown <= 0 else steerDeltaDown
 
-    # ====================== 老玩家专属 · 最终锁定版 ======================
-    #
-    # 【核心结论】
-    # 1. 扭矩增益必须 >1.0，但不能 >1.15（否则 EPS 过热/报错）。
-    # 2. 绝对不要手动修改 STEER_DELTA_UP/DOWN（原厂值 300~400 是甜点）。
-    # 3. 角度误差保护必须极克制（>12° 才干预，且只削弱 3%）。
-    #
-    # 【历史踩坑记录】
-    # - 曾尝试 STEER_DELTA = 800 → 触发 EPS 保护，巡航退出。
-    # - 曾尝试扭矩 1.35x → 低速抖动，EPS 报错。
-    # - 当前参数为“大力出奇迹”与“绝对稳定”的平衡点。
-    #
-    # 【适用场景】
-    # 丰田 TSS2 车型，已物理破解过 EPS，追求大角度掉头/右转手感。
-    # =====================================================================
+    # ====================== 低速 / 高速隔离的转向策略 ======================
+    # 设计：
+    #   v < LOW_SPEED_MAX (30)：走"低速段"参数 —— 增益大、角度放大猛、右转补偿大、
+    #                           角度误差保护几乎不触发（掉头/窄路敢打）
+    #   v > HIGH_SPEED_MIN (50)：走"高速段"参数 —— 增益收敛、角度放大收敛、补偿收敛、
+    #                            角度误差保护及时（防 EPS 过热/故障）
+    #   30~50 区间：对增益/放大/补偿做线性插值，平滑过渡，避免跨阈值突变
+    # 所有量最后统一乘到 steer_scale 与 steer_desired_deg 上。
+    # ==========================================================================
 
     v = CS.out.vEgo
 
-    # 随速线性扭矩增益（黄金曲线）
-    # 低速 1.03~1.09：保证掉头/窄路力度
-    # 高速 1.12~1.14：保证变道/弯道稳定
-    speed_list = [0, 20, 40, 70, 120]
-    gain_list  = [1.03, 1.06, 1.09, 1.12, 1.14]
-    steer_scale = float(np.interp(v, speed_list, gain_list))
+    # --- 1) 扭矩增益 steer_scale：低速高、高速低，过渡区间插值 ---
+    if v <= LOW_SPEED_MAX:
+      steer_scale = LOW_GAIN
+    elif v >= HIGH_SPEED_MIN:
+      steer_scale = HIGH_GAIN
+    else:
+      ratio = (v - LOW_SPEED_MAX) / (HIGH_SPEED_MIN - LOW_SPEED_MAX)
+      steer_scale = LOW_GAIN + ratio * (HIGH_GAIN - LOW_GAIN)
+    steer_scale = min(steer_scale, MAX_STEER_GAIN)  # 硬上限兜底
 
-    # 角度误差智能保护（极克制版）
-    # 仅在超大角度误差时轻微限力，绝不中途掉扭矩
-    angle_err = abs(actuators.steeringAngleDeg - CS.out.steeringAngleDeg)
-    if angle_err > 12.0:
-        # 最大仅削弱 3%，手感几乎无损
-        steer_scale = max(1.05, steer_scale * 0.97)
+    # --- 2) 角度放大倍数：低速猛、高速收敛 ---
+    if v <= LOW_SPEED_MAX:
+      angle_boost = LOW_ANGLE_BOOST
+    elif v >= HIGH_SPEED_MIN:
+      angle_boost = HIGH_ANGLE_BOOST
+    else:
+      ratio = (v - LOW_SPEED_MAX) / (HIGH_SPEED_MIN - LOW_SPEED_MAX)
+      angle_boost = LOW_ANGLE_BOOST + ratio * (HIGH_ANGLE_BOOST - LOW_ANGLE_BOOST)
 
-    # 最终扭矩输出（受 EPS 反馈限制，安全兜底）
+    steer_desired_deg = actuators.steeringAngleDeg * angle_boost
+
+    # --- 3) 右转补偿：低速补偿大、高速补偿收敛 ---
+    if steer_desired_deg > RIGHT_TURN_THRESHOLD:
+      if v <= LOW_SPEED_MAX:
+        right_comp = LOW_RIGHT_COMP
+      elif v >= HIGH_SPEED_MIN:
+        right_comp = HIGH_RIGHT_COMP
+      else:
+        ratio = (v - LOW_SPEED_MAX) / (HIGH_SPEED_MIN - LOW_SPEED_MAX)
+        right_comp = LOW_RIGHT_COMP + ratio * (HIGH_RIGHT_COMP - LOW_RIGHT_COMP)
+      steer_desired_deg += right_comp
+
+    # --- 4) 角度误差保护：低速几乎不触发、高速及时保护 ---
+    # 用放大后的期望角与实际角比较，保护更及时
+    angle_err = abs(steer_desired_deg - CS.out.steeringAngleDeg)
+    if v <= LOW_SPEED_MAX:
+      err_thresh = LOW_ERR_PROTECT
+    elif v >= HIGH_SPEED_MIN:
+      err_thresh = HIGH_ERR_PROTECT
+    else:
+      ratio = (v - LOW_SPEED_MAX) / (HIGH_SPEED_MIN - LOW_SPEED_MAX)
+      err_thresh = LOW_ERR_PROTECT + ratio * (HIGH_ERR_PROTECT - LOW_ERR_PROTECT)
+    if angle_err > err_thresh:
+      steer_scale = max(1.0, steer_scale * 0.97)  # 误差大时削弱增益，高速更有效
+
     new_torque = int(round(actuators.torque * self.params.STEER_MAX * steer_scale))
     # =====================================================================
 
@@ -127,7 +179,7 @@ class CarController(CarControllerBase):
       apply_torque = 0
       apply_steer_req = False
       if self.frame % 2 == 0:
-        apply_angle = actuators.steeringAngleDeg + CS.out.steeringAngleOffsetDeg
+        apply_angle = steer_desired_deg + CS.out.steeringAngleOffsetDeg
         self.last_angle = apply_std_steer_angle_limits(apply_angle, self.last_angle, CS.out.vEgoRaw,
                                                        CS.out.steeringAngleDeg + CS.out.steeringAngleOffsetDeg,
                                                        CC.latActive, self.params.ANGLE_LIMITS)
@@ -135,7 +187,18 @@ class CarController(CarControllerBase):
     self.last_torque = apply_torque
     steer_command = toyotacan.create_steer_command(self.packer, apply_torque, apply_steer_req)
 
+    # *** SecOC：补回同步重置逻辑（原文件2误删，会导致认证失败 / EPS 不响应）***
     if self.CP.flags & ToyotaFlags.SECOC.value:
+      if CS.secoc_synchronization['RESET_CNT'] != self.secoc_prev_reset_counter:
+        self.secoc_lka_message_counter = 0
+        self.secoc_lta_message_counter = 0
+        self.secoc_prev_reset_counter = CS.secoc_synchronization['RESET_CNT']
+
+        expected_mac = build_sync_mac(self.secoc_key, int(CS.secoc_synchronization['TRIP_CNT']),
+                                      int(CS.secoc_synchronization['RESET_CNT']))
+        if int(CS.secoc_synchronization['AUTHENTICATOR']) != expected_mac:
+          carlog.error("SecOC synchronization MAC mismatch, wrong key?")
+
       steer_command = add_mac(self.secoc_key,
                               int(CS.secoc_synchronization['TRIP_CNT']),
                               int(CS.secoc_synchronization['RESET_CNT']),
@@ -190,7 +253,8 @@ class CarController(CarControllerBase):
         accel_due_to_pitch = math.sin(min(self.pitch.x, 0.0)) * ACCELERATION_DUE_TO_GRAVITY
         net_acceleration_request = pcm_accel_cmd + accel_due_to_pitch
 
-        if not self.CP.flags & ToyotaFlags.SECOC.value:
+        # 修复：加括号明确优先级，(flags & SECOC) == 0 表示非 SECOC 车型
+        if (self.CP.flags & ToyotaFlags.SECOC.value) == 0:
           a_ego_blended = float(np.interp(CS.out.vEgo, [1.0, 2.0], [CS.gvc, CS.out.aEgo]))
         else:
           a_ego_blended = CS.out.aEgo
@@ -212,17 +276,23 @@ class CarController(CarControllerBase):
           self.long_pid.reset()
 
         net_acceleration_request_min = min(actuators.accel + accel_due_to_pitch, net_acceleration_request)
-        if net_acceleration_request_min < 0.0 or stopping or not CC.longActive:
-            self.permit_braking = True
-        elif net_acceleration_request_min > 0.0:
-            self.permit_braking = False
+        # 恢复带迟滞的判定（原大佬分支 0.2/0.3），避免临界点频繁切换
+        if net_acceleration_request_min < 0.2 or stopping or not CC.longActive:
+          self.permit_braking = True
+        elif net_acceleration_request_min > 0.3:
+          self.permit_braking = False
 
-        if accel_due_to_pitch < -0.3:
-                if -0.15 < pcm_accel_cmd < 0.15:
-                        pcm_accel_cmd = 0.0
+        # 坡度死区/清零：仅在坡度绝对值较大时做清零，避免平路误触发
+        # accel_due_to_pitch 为 0 附近表示平路，绝对值大表示陡坡
+        pitch_abs = abs(accel_due_to_pitch)
+        if pitch_abs > 0.3:
+          # 陡坡：指令很小时清零，减少抖动
+          if -0.15 < pcm_accel_cmd < 0.15:
+            pcm_accel_cmd = 0.0
         else:
-                if -0.05 < pcm_accel_cmd < 0.05:
-                        pcm_accel_cmd = 0.0
+          # 平路/缓坡：更窄的死区
+          if -0.05 < pcm_accel_cmd < 0.05:
+            pcm_accel_cmd = 0.0
 
         pcm_accel_cmd = float(np.clip(pcm_accel_cmd, self.params.ACCEL_MIN, self.params.ACCEL_MAX))
         can_sends.append(toyotacan.create_accel_command(self.packer,

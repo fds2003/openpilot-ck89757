@@ -14,6 +14,12 @@ LAT_MPC_DIR = os.path.dirname(os.path.abspath(__file__))
 EXPORT_DIR = os.path.join(LAT_MPC_DIR, "c_generated_code")
 JSON_FILE = os.path.join(LAT_MPC_DIR, "acados_ocp_lat.json")
 
+# 保留32步预瞄，保证转弯路径完整
+N = 32
+T_IDXS_FULL = np.array(ModelConstants.T_IDXS)
+SAFE_N = min(N, len(T_IDXS_FULL) - 1)
+Tf = T_IDXS_FULL[SAFE_N]
+
 X_DIM = 4
 P_DIM = 2
 COST_E_DIM = 3
@@ -23,19 +29,18 @@ MODEL_NAME = 'lat'
 ACADOS_SOLVER_TYPE = 'SQP_RTI'
 
 # 保留32步预瞄，保证转弯路径完整
-N = 32
-T_IDXS_FULL = np.array(ModelConstants.T_IDXS)
-SAFE_N = min(N, len(T_IDXS_FULL) - 1)
-Tf = T_IDXS_FULL[SAFE_N]
-
-# 【优化】降低阈值，更早识别路口右转/小半径弯道
 last_nav_gain = 1.0
 HEADING_DIFF_THRESH = 0.045
 BIG_TURN_DIFF_THRESH = 0.080
 
+# 转向角速度硬约束上限(rad/s)：原 105°/s，适度放宽到 115°/s，
+# 让高速大弯时求解器"打得动"方向，配合权重分档使用。
+MAX_STEER_RATE_RAD = np.radians(115.0)
+
 # 路径条兜底缓存
 last_valid_x_sol = np.zeros((N+1, X_DIM))
 last_valid_u_sol = np.zeros((N, 1))
+
 
 def gen_lat_model():
   model = AcadosModel()
@@ -68,6 +73,7 @@ def gen_lat_model():
   model.f_impl_expr = model.xdot - f_expl
   model.f_expl_expr = f_expl
   return model
+
 
 def gen_lat_ocp():
   ocp = AcadosOcp()
@@ -105,9 +111,9 @@ def gen_lat_ocp():
 
   ocp.constraints.constr_type = 'BGH'
   ocp.constraints.idxbx = np.array([2, 3])
-  # 【优化】小幅放宽转向角速度上限，提升右转执行响应
-  ocp.constraints.ubx = np.array([np.radians(130), np.radians(105)])
-  ocp.constraints.lbx = np.array([-np.radians(130), -np.radians(105)])
+  # 转向角速度上限放宽到 115°/s（原 105°/s），高速大弯允许更快打方向
+  ocp.constraints.ubx = np.array([np.radians(130), MAX_STEER_RATE_RAD])
+  ocp.constraints.lbx = np.array([-np.radians(130), -MAX_STEER_RATE_RAD])
 
   x0 = np.zeros((X_DIM,))
   ocp.constraints.x0 = x0
@@ -123,6 +129,7 @@ def gen_lat_ocp():
   ocp.solver_options.shooting_nodes = T_IDXS_FULL[:N+1]
   ocp.code_export_directory = EXPORT_DIR
   return ocp
+
 
 class LateralMpc:
   def __init__(self, x0=None):
@@ -159,37 +166,51 @@ class LateralMpc:
     last_valid_x_sol = self.x_sol.copy()
     last_valid_u_sol = self.u_sol.copy()
 
+  def _high_speed_steering_rate_weight(self, heading_diff, is_big_turn):
+    """高速时转向速率惩罚随弯度分档：直道重阻尼防抖，大弯降权保灵敏。"""
+    if is_big_turn:
+      return 1.30   # 高速大弯：允许快速打方向，消除迟钝
+    elif heading_diff > HEADING_DIFF_THRESH:
+      return 1.70   # 高速中等弯：折中
+    else:
+      return 2.20   # 高速直道/小弯：重阻尼，根治抖动
+
   def set_weights(self, path_weight, heading_weight, lat_accel_weight, lat_jerk_weight, steering_rate_weight,
-                  is_u_turn=False, is_high_speed=False, v_kph=0.0, is_big_turn=False):
-    # U型掉头：流畅循迹
+                  is_u_turn=False, is_high_speed=False, v_kph=0.0, is_big_turn=False,
+                  is_right_turn=False, heading_diff=0.0):
     if is_u_turn:
       path_weight = 1.65
       heading_weight = 2.05
       lat_accel_weight = 0.85
       lat_jerk_weight = 0.60
       steering_rate_weight = 1.0
-    # 大角度右转/急弯（重点强化）
     elif is_big_turn:
       path_weight = 1.85 * self.nav_gain
       heading_weight = 2.0 * self.nav_gain
       lat_accel_weight = 0.65
       lat_jerk_weight = 0.50
       steering_rate_weight = 0.80
-    # 高速＞100km/h：优先稳定
+    # ★ 高速：转向速率惩罚随弯度分档，直道防抖、弯道灵敏不再隔离打架
     elif is_high_speed:
       path_weight = 1.15
       heading_weight = 1.30
       lat_accel_weight = 0.55
       lat_jerk_weight = 0.35
-      steering_rate_weight = 1.7
-    # 中低速 30~100km/h 常规弯道
+      steering_rate_weight = self._high_speed_steering_rate_weight(heading_diff, is_big_turn)
+    # 【核心优化】低速右转专用分支
+    elif is_right_turn:
+      # ★ R1: 降低航向权重、略提路径权重，让路径跟踪主导，MPC 敢解大曲率
+      path_weight = 2.60 * self.nav_gain
+      heading_weight = 1.20 * self.nav_gain
+      lat_accel_weight = 0.50
+      lat_jerk_weight = 0.40
+      steering_rate_weight = 0.80
     elif v_kph > 30:
       path_weight = 1.80 * self.nav_gain
       heading_weight = 2.05
       lat_accel_weight = 0.85
       lat_jerk_weight = 0.65
       steering_rate_weight = 1.40
-    # 【核心优化】低速＜30km/h 城市路口/小半径右转（最强跟随）
     else:
       path_weight = 2.10 * self.nav_gain
       heading_weight = 1.80
@@ -202,24 +223,33 @@ class LateralMpc:
       self.solver.cost_set(i, 'W', W)
     self.solver.cost_set(N, 'W', W[:COST_E_DIM,:COST_E_DIM])
 
-  def run(self, x0, p, y_pts, heading_pts, yaw_rate_pts):
+  def run(self, x0, p, y_pts, heading_pts, yaw_rate_pts, turn_y_pts=None):
     global last_nav_gain, last_valid_x_sol, last_valid_u_sol
     x0_cp = np.copy(x0)
     p_cp = np.copy(p)
+    turn_active = (turn_y_pts is not None) and (len(turn_y_pts) > 0)
+
+    if turn_active and len(turn_y_pts) > N+1:
+      turn_y_pts = turn_y_pts[:N+1]
 
     self.solver.constraints_set(0, "lbx", x0_cp)
     self.solver.constraints_set(0, "ubx", x0_cp)
-    self.yref[:,0] = y_pts
+    self.yref[:,0] = turn_y_pts if turn_active else y_pts
 
     v_ego = p_cp[0, 0]
     v_kph = v_ego * 3.6
     is_high_speed = v_kph > 100
 
-    # 航向偏差识别转弯
     heading_diff = np.max(np.abs(heading_pts)) if len(heading_pts) > 0 else 0.0
     is_big_turn = heading_diff > BIG_TURN_DIFF_THRESH
 
-    # 动态导航增益
+    if turn_active:
+      _ref_for_rt = turn_y_pts
+    else:
+      _ref_for_rt = y_pts
+    y_mean = float(np.mean(_ref_for_rt)) if len(_ref_for_rt) > 0 else 0.0
+    is_right_turn_model = y_mean > 0.30
+
     if is_big_turn:
         target_gain = 1.40
     elif heading_diff > HEADING_DIFF_THRESH:
@@ -227,7 +257,6 @@ class LateralMpc:
     else:
         target_gain = 1.0
 
-    # 导航激活 转弯额外增强
     try:
         from openpilot.selfdrive.carrot.amap_navi import NAV_ACTIVE
         if NAV_ACTIVE and is_big_turn:
@@ -235,34 +264,46 @@ class LateralMpc:
     except:
         pass
 
+    if is_right_turn_model:
+        target_gain = max(target_gain, 1.20)
+
     # 【优化】加快增益响应，转弯即时生效，同时保留防抖
     self.nav_gain = 0.80 * last_nav_gain + 0.20 * target_gain
     last_nav_gain = self.nav_gain
 
     self.yref[:,1] = heading_pts * (v_ego + SPEED_OFFSET)
     self.yref[:,2] = yaw_rate_pts * (v_ego + SPEED_OFFSET)
+    # ★ R2: 右转时用弧线末端偏出量反推恒定航向参考，与路径参考一致，MPC 不矛盾
+    if turn_active and turn_y_pts is not None and len(turn_y_pts) > 1:
+      try:
+        _ty = np.asarray(turn_y_pts, dtype=float)
+        _y_end = _ty[-1]
+        _total_dx = max(v_ego * SPEED_OFFSET * (len(_ty) - 1), 2.0)
+        # 末端偏出对应的平均航向角，限幅防奇异
+        _psi_target = np.clip(np.arctan2(_y_end, _total_dx), 0.0, 0.45)
+        if _psi_target > 0.05:
+          self.yref[:, 1] = _psi_target * (v_ego + SPEED_OFFSET)
+      except Exception:
+        pass
 
-    # ========== ✅ 特殊路口豁免（仅对“又直又缓”的右转生效） ==========
-    # 1. 判断是否为窄路场景
     is_narrow_road = (not is_big_turn) and v_kph < 30
-    
-    # 2. 获取当前路径曲率（越小越直）
     current_curvature = abs(yaw_rate_pts[0] / max(v_ego, 0.1))
-    
-    # 3. 识别“缓弯 + 低速窄路”
-    if is_narrow_road and v_kph < 20 and current_curvature < 0.005:
-        # 4. 主动弱化贴右，把转向权还给 MPC，防止“不敢甩”
+    if turn_active:
+        pass
+    elif is_narrow_road and v_kph < 20 and current_curvature < 0.005 and not is_right_turn_model:
         self.yref[:, 0] *= 0.3
-    # ===================================================================
 
+    if turn_active:
+        p_cp[:, 0] = v_ego
     for i in range(N):
       self.solver.set(i, "yref", self.yref[i])
       self.solver.set(i, "p", p_cp[i])
     self.solver.set(N, "p", p_cp[N])
     self.solver.cost_set(N, "yref", self.yref[N][:COST_E_DIM])
 
-    # 加载分场景权重
-    self.set_weights(0,0,0,0,0,False,is_high_speed,v_kph,is_big_turn)
+    # ★ 把 heading_diff 传进 set_weights，让高速权重分档能拿到弯度信息
+    self.set_weights(0, 0, 0, 0, 0, False, is_high_speed, v_kph, is_big_turn,
+                    is_right_turn=is_right_turn_model, heading_diff=heading_diff)
 
     t = time.monotonic()
     try:

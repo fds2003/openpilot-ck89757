@@ -39,7 +39,7 @@ class CarControllerParams:
       self.ACCEL_MAX = 2.0
     else:
       self.ACCEL_MAX = 1.2  # m/s2, lower than allowed 2.0 m/s^2 for tuning reasons
-    self.ACCEL_MIN = -3.0  # m/s2
+    self.ACCEL_MIN = -3.5  # m/s2
 
     if CP.lateralTuning.which() == 'torque':
       self.STEER_DELTA_UP = 18       # 1.0s time to peak torque

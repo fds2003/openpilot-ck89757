@@ -2,13 +2,71 @@ import time
 import numpy as np
 from openpilot.common.realtime import DT_MDL
 from openpilot.common.swaglog import cloudlog
-from openpilot.selfdrive.controls.lib.lateral_mpc_lib.lat_mpc import LateralMpc
-from openpilot.selfdrive.controls.lib.lateral_mpc_lib.lat_mpc import N as LAT_MPC_N
-from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, MIN_SPEED, get_speed_error
+from .curve_sync import CurveSync
+try:
+    from openpilot.selfdrive.controls.lib.lateral_mpc_lib.lat_mpc import LateralMpc as _RealLateralMpc
+    from openpilot.selfdrive.controls.lib.lateral_mpc_lib.lat_mpc import N as LAT_MPC_N
+    LateralMpc = _RealLateralMpc
+except Exception:
+    if "LateralMpc" not in globals():
+        class LateralMpc:
+            def __init__(self): pass
+            def reset(self, x0): pass
+            def update(self, *a, **k): pass
+            def set_weights(self, *a, **k): pass
+            def run(self, *a, **k): pass
+            x_sol = np.zeros((33, 4), dtype=np.float32)
+            u_sol = np.zeros((33, 1), dtype=np.float32)
+            solve_time = 0.0
+            solution_status = 0
+            cost = 0.0
+            nav_gain = 1.0
+    if "LAT_MPC_N" not in globals():
+        LAT_MPC_N = 33
+try:
+    from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, MIN_SPEED, get_speed_error
+except Exception:
+    if "CONTROL_N" not in globals():
+        CONTROL_N = 33
+    if "MIN_SPEED" not in globals():
+        MIN_SPEED = 0.001
+    if "get_speed_error" not in globals():
+        def get_speed_error(*a, **k): return 0.0
+try:
+    from openpilot.common.params import Params as _Params_rt
+    def _set_right_turn_early(flag):
+        try:
+            _Params_rt().put_bool("RightTurnEarly", bool(flag))
+        except Exception:
+            pass
+except Exception:
+    def _set_right_turn_early(flag):
+        pass
 import cereal.messaging as messaging
 from cereal import log
 from openpilot.common.params import Params
-from openpilot.selfdrive.controls.lib.lane_planner_2 import LanePlanner
+try:
+    from openpilot.selfdrive.controls.lib.lane_planner_2 import LanePlanner as _RealLanePlanner
+    LanePlanner = _RealLanePlanner
+except Exception:
+    if "LanePlanner" not in globals():
+        class LanePlanner:
+            def __init__(self): pass
+            def parse_model(self, md): pass
+            def get_d_path(self, *a, **k): return None
+            obstacle_avoid_scale = 1.0
+            lane_change_multiplier = 0.0
+            lanefull_mode = False
+            lane_width_left = 3.7
+            lane_width_right = 3.7
+            curvature = 0.0
+try:
+    from openpilot.selfdrive.carrot.carrot_serv import (
+        get_carrot_serv_instance, BLINKER_LEFT, BLINKER_RIGHT, BLINKER_NONE,
+    )
+except Exception:
+    get_carrot_serv_instance = lambda: None
+    BLINKER_LEFT, BLINKER_RIGHT, BLINKER_NONE = 1, 2, 0
 from collections import deque
 
 TRAJECTORY_SIZE = 33
@@ -17,9 +75,8 @@ PATH_COST = 1.0
 LATERAL_MOTION_COST = 0.11
 LATERAL_ACCEL_COST = 0.0
 LATERAL_JERK_COST = 0.04
-STEERING_RATE_COST = 220.0
+STEERING_RATE_COST = 160.0
 
-# ===================== 导航联动优化（与 amap_navi 对接）=====================
 NAV_TIMEOUT = 3.5
 last_nav_update = 0.0
 nav_hold_mode = False
@@ -33,7 +90,6 @@ last_truck_offset = 0.0
 smooth_y_prev = np.zeros(TRAJECTORY_SIZE)
 smooth_yaw_prev = np.zeros(TRAJECTORY_SIZE)
 
-# ===================== 【全局优化参数】=====================
 LANE_LINE_SOLID_THRESHOLD = 0.3
 LANE_CHANGE_SOLID_BLOCK = True
 LEFT_TURN_PATH_SUPPRESS = True
@@ -44,13 +100,16 @@ PLAN_GAIN_TABLE = [1.18, 1.12, 1.06, 1.01, 0.95, 0.91]
 ANGLE_ERR_THRESH = 10.0
 ANGLE_ERR_EXTRA_GAIN = 1.02
 RIGHT_TURN_ANGLE_THRESH = 3.2
-RIGHT_TURN_CURV_COMP = 1.48
+RIGHT_TURN_CURV_COMP = 8.0
+CORNERING_ANGLE_THRESH = 25.0
+CORNERING_MAX_CURV = 0.062
+CORNERING_LOW_SPEED_CLIP = 0.040
+CORNERING_CURV_GAIN = 1.28
 CURV_COMP_SCALE = 1e-4
 HIGH_SPEED_DAMP = 0.83
 HIGH_SPEED_DAMP_PLUS = 0.89
 INTERSECTION_MAX_STEER_RATIO = 0.55
 
-# ========== 路径条安全兜底 ==========
 LAST_VALID_PATH_Y = np.zeros(TRAJECTORY_SIZE)
 LAST_VALID_PATH_YAW = np.zeros(TRAJECTORY_SIZE)
 LAST_STEER_CMD = 0.0
@@ -86,19 +145,31 @@ TURN_LOOKAHEAD_FACTOR = 1.8
 BASE_PATH_POINTS = TRAJECTORY_SIZE
 PATH_STITCH_TURN_TOL = 0.5
 
-# ========== 右转贴边专用 ==========
 RIGHT_TURN_SAFE_MARGIN = 0.06
-RIGHT_TURN_FIX_OFFSET = -0.08
+RIGHT_TURN_FIX_OFFSET = 0.00
 
-# ========== 全局轨迹 UI 安全边界 ==========
-GLOBAL_Y_MIN = -3.0
-GLOBAL_Y_MAX = 3.0
+TURN_RAMP_OFFSET_UI = 0.00
 
-# ========== 障碍物避让全局参数（增强版，不动刹车） ==========
+TURN_PATH_COST_MULT = 1.1
+TURN_MOTION_COST_MULT = 0.85
+TURN_STEER_RATE_MULT = 0.90
+
+GLOBAL_Y_MIN = -2.4
+GLOBAL_Y_MAX = 2.4
+GLOBAL_Y_MAX_EXIT = 2.0
+
+ROAD_EDGE_PROB_THRESH = 0.30
+ROAD_EDGE_SAFE_MARGIN = 0.15
+DEVIATION_CORRECT_STEP = 0.25
+DEVIATION_NORM_THRESH = 0.82
+NARROW_ROAD_RIGHT_TURN_MAX_Y = 1.6
+ROADEDGE_CENTER_BLEND = 0.35
+ROADEDGE_BOUND_ENABLED = True
+
 OBSTACLE_MAX_DETECT_LONG = 30.0
 OBSTACLE_SMOOTH_ALPHA = 0.35
 ONCOMING_SHIFT_MAX = 0.60
-PEDESTRIAN_SHIFT_MAX = 0.80
+PEDESTRIAN_SHIFT_MAX = 1.20
 STATIC_OBSTACLE_SHIFT_MAX = 1.20
 ROADSIDE_PARKED_SHIFT_MAX = 1.60
 OBS_EXTRA_GAIN_MAX = 1.50
@@ -106,31 +177,45 @@ OBS_STEER_RATE_DAMP = 0.60
 STATIC_CURV_LIMIT_SCALE = 1.15
 HIGH_SPEED_NO_AVOID = 80.0 / 3.6
 
-# ========== 导航变道动态参数 ==========
 NAV_DYNAMIC_DIST_SHORT = 60
-NAV_DYNAMIC_DIST_MID = 100
+NAV_DYNAMIC_DIST_MID = 60
 NAV_DYNAMIC_DIST_LONG = 200
 NAV_DYNAMIC_DIST_DEFAULT = 250
 NAV_CROSS_JUDGE_DIST = 400
 RED_LIGHT_EXTRA_MARGIN = 0.5
 NAV_LANE_WIDTH_EXTEND = 0.8
 
-# ========== 红绿灯路口变道权限控制 ==========
 IN_INTERSECTION_SOLID_DIST = 80
 NAV_RELEASE_EARLY_DIST = 120
 
-# ========== 路边停车检测阈值 ==========
-ROADSIDE_DIST_THRESH = 2.2
+ROADSIDE_DIST_THRESH = 3.5
 
-# ========== 【新增】打灯避让参数 ==========
-BLINKER_DELAY_TIME = 0.8
+BLINKER_DELAY_TIME = 1.5
 BLINKER_HOLD_TIME = 2.5
 MIN_OBS_DIST_TO_BLINK = 25.0
 
-# ========== 【新增】汇入主路提速参数 ==========
 MERGE_SPEED_BOOST = 12.0
 MERGE_TRIGGER_DIST = 180.0
 MERGE_MIN_SPEED = 75.0
+
+PUBLISH_RATE_NORMAL = 20
+PUBLISH_RATE_CONGESTED = 10
+PUBLISH_RATE_PARKED = 5
+CONGESTION_VELO_THRESH = 8.0
+
+TURN_EXIT_TRANSITION_TIME = 1.5
+
+LANE_PROB_NARROW_THRESH = 0.40
+LANE_FADE_ALPHA = 0.40
+LANE_FADE_CURV_GAIN = 1.10
+
+# ★ 低速弯道减速保护阈值（m/s），低于此速度不主动减速
+_LOW_SPEED_DECEL_PROTECT = 40.0 / 3.6
+
+# ★ 快速路岔道减速过渡步长（每帧最多降多少 m/s）
+_V_DECEL_STEP_FAST = 3.0 / 3.6
+# ★ 曲率减速过渡步长
+_V_DECEL_STEP_CURV = 2.0 / 3.6
 
 
 def is_nav_active():
@@ -220,6 +305,11 @@ def check_solid_lane_line(md):
 
 
 def is_intersection_left_turn(sm):
+    try:
+        if is_right_turn():
+            return False
+    except Exception:
+        pass
     md = sm['modelV2']
     desire = md.meta.desire
     is_inter = g_big_cross or g_narrow_road
@@ -276,7 +366,7 @@ class LateralPlanner:
         self.pathOffset = float(self.params.get_int("PathOffset")) * 0.01
         self.useLaneLineMode = False
         self.plan_a = np.zeros((TRAJECTORY_SIZE,))
-        self.plan_yaw = np.zeros((TRAJECTORY_SIZE,))
+        self.plan_yaw = np.zeros((TRAJECTORY_SIZE))
         self.plan_yaw_rate = np.zeros((TRAJECTORY_SIZE,))
         self.t_idxs = np.arange(TRAJECTORY_SIZE)
         self.y_pts = np.zeros((TRAJECTORY_SIZE,))
@@ -295,6 +385,7 @@ class LateralPlanner:
         self.obs_closest_dist = float("inf")
         self.has_static_obstacle = False
         self.has_roadside_parked = False
+        self.has_left_pressure = False
         self.default_steering_rate_cost = STEERING_RATE_COST
 
         self.nav_release_dist = NAV_DYNAMIC_DIST_DEFAULT
@@ -307,8 +398,47 @@ class LateralPlanner:
         self.blinker_delay_ts = 0.0
         self.blinker_hold_ts = 0.0
         self.avoidance_active = False
+        self.blinker_avoid_speed_max = 25.0 / 3.6
+        self.blinker_avoid_boost = 0.6
+        self.blinker_avoid_min_obs = 0.15
 
         self.merge_boost = 0.0
+        self._last_publish_t = 0.0
+
+        self.curve_speed_limit = 0.0
+        self.curve_decel_active = False
+        self.curve_decel_speed_kph = 35.0
+        self.curve_decel_min_kph = 12.0
+        self.curve_decel_curv_thresh = 0.0010
+        self.turn_decel_min_kph = 12.0
+
+        self.obs_offset_profile = np.zeros(TRAJECTORY_SIZE)
+
+        self.right_turn_released = True
+        self.right_turn_lock_ts = 0.0
+        self._exit_reset_alpha = 0.15
+
+        self._steer_active_hyst = False
+        self._steer_active_enter_deg = 12.0
+        self._steer_active_exit_deg = 6.0
+
+        self.available_road_width = 4.0
+        self.left_boost = 1.15
+        self.left_smooth_alpha = 0.55
+        self.left_gravity = 0.30
+
+        self._rt_path_mem = np.zeros(TRAJECTORY_SIZE)
+        self._rt_path_mem_valid = False
+        self._rt_curv_mem = 0.0
+        self._rt_curv_mem_valid = False
+        self._edge_center_offset = 0.0
+        self._edge_valid = False
+        self._deviation_dir = 0
+
+        self._obs_profile_prev = np.zeros(TRAJECTORY_SIZE)
+        self._was_right_turning = False
+
+        self.curve_decel_target_v = 0.0
 
     def reset_mpc(self, x0=None):
         if x0 is None:
@@ -317,21 +447,39 @@ class LateralPlanner:
         self.lat_mpc.reset(x0=self.x0)
 
     def _calc_obstacle_avoid_param(self, carrot):
+        HALF_CAR_WIDTH = 0.90
+        MIN_SAFETY_MARGIN = 0.25
+        MAX_SAFETY_MARGIN = 0.60
+        CLOSE_DIST = 10.0
+        FAR_DIST = 30.0
+        OBS_HALF_WIDTH = {
+            "pedestrian": 0.25, "motorcycle": 0.35, "bicycle": 0.30,
+            "parked": 0.90, "static": 0.60, "oncoming": 0.90, "unknown": 0.60,
+        }
         target_offset = 0.0
         curv_gain = 1.0
         min_dist = float("inf")
         has_static = False
         has_roadside_parked = False
+        has_left_pressure = False
+        max_left_push = 0.0
+        max_right_push = 0.0
+        profile = np.zeros(TRAJECTORY_SIZE, dtype=np.float64)
         try:
-            obs_list = carrot.obstacles
+            try:
+                obs_list = carrot.obstacles
+            except Exception:
+                obs_list = []
         except Exception:
             self.obs_target_offset = 0.0
+            self.obs_smooth_offset = 0.0
             self.obs_curv_gain = 1.0
             self.obs_closest_dist = float("inf")
             self.has_static_obstacle = False
             self.has_roadside_parked = False
+            self.has_left_pressure = False
+            self.obs_offset_profile = np.zeros(TRAJECTORY_SIZE, dtype=np.float32)
             return
-
         for obs in obs_list:
             try:
                 d_long = float(obs.longDistance)
@@ -339,49 +487,75 @@ class LateralPlanner:
                 o_type = str(obs.type)
             except Exception:
                 continue
-
             if d_long > OBSTACLE_MAX_DETECT_LONG or d_long < 0.5:
                 continue
-
-            dist_scale = max(0.0, 1.0 - d_long / OBSTACLE_MAX_DETECT_LONG)
             min_dist = min(min_dist, d_long)
-
+            if d_long < CLOSE_DIST:
+                dynamic_margin = MAX_SAFETY_MARGIN
+            else:
+                t = np.clip((d_long - CLOSE_DIST) / (FAR_DIST - CLOSE_DIST), 0.0, 1.0)
+                dynamic_margin = MAX_SAFETY_MARGIN + (MIN_SAFETY_MARGIN - MAX_SAFETY_MARGIN) * t
+            obs_hw = OBS_HALF_WIDTH.get(o_type, 0.60)
+            # ★ 左/右避让不对称修复:left_boost 原条件 `if d_lat < 0` 把 1.15 增强
+            #   错配到了作者标记的「右」侧(与变量名 left_boost、has_left_pressure
+            #   同为 d_lat>=0 侧的设计不一致),导致右侧避让比左侧强。改回 d_lat>=0
+            #   (左)侧,使左侧间隙也获得 1.15 增强,追平右侧。
+            _left_boost = self.left_boost if d_lat >= 0 else 1.0
+            required_clearance = (abs(d_lat) + obs_hw + HALF_CAR_WIDTH + dynamic_margin) * _left_boost
+            if d_lat >= 0:
+                push = -required_clearance
+                max_left_push = max(max_left_push, abs(push))
+                if d_lat > 0.3:
+                    has_left_pressure = True
+            else:
+                push = required_clearance
+                max_right_push = max(max_right_push, push)
             if o_type in ("parked", "static") and abs(d_lat) < ROADSIDE_DIST_THRESH:
                 has_roadside_parked = True
-                dir_sign = 1.0 if d_lat > 0 else -1.0
-                shift = dir_sign * ROADSIDE_PARKED_SHIFT_MAX * dist_scale
-                curv_gain = 1.0
-            elif o_type == "oncoming":
-                shift = -ONCOMING_SHIFT_MAX * dist_scale
-                curv_gain = 1.0
-            elif o_type in ("pedestrian", "motorcycle"):
-                dir_sign = 1.0 if d_lat > 0 else -1.0
-                shift = dir_sign * PEDESTRIAN_SHIFT_MAX * dist_scale
-                curv_gain = 1.0
-            elif o_type in ("static", "parked", "unknown"):
+            if o_type in ("static", "parked", "unknown"):
                 has_static = True
-                dir_sign = 1.0 if d_lat > 0 else -1.0
-                shift = dir_sign * STATIC_OBSTACLE_SHIFT_MAX * dist_scale
-                curv_gain = 1.0
-            else:
-                shift = 0.0
-                curv_gain = 1.0
-
-            target_offset += shift
-            curv_gain *= curv_gain
-
-        target_offset = np.clip(target_offset, -1.5, 1.5)
-        self.obs_smooth_offset = OBSTACLE_SMOOTH_ALPHA * target_offset + (1 - OBSTACLE_SMOOTH_ALPHA) * self.obs_smooth_offset
+            idx_center = int(np.clip(d_long / max(FAR_DIST, 1.0) * (TRAJECTORY_SIZE - 1), 0, TRAJECTORY_SIZE - 1))
+            span = 4
+            i0 = max(0, idx_center - span)
+            i1 = min(TRAJECTORY_SIZE, idx_center + span + 1)
+            for i in range(i0, i1):
+                w = 1.0 - abs(i - idx_center) / (span + 1)
+                if push < 0:
+                    profile[i] = min(profile[i], push * w)
+                else:
+                    profile[i] = max(profile[i], push * w)
+            now_ts = time.time()
+            if (now_ts - getattr(self, '_last_obs_chk_t', 0.0)) > 5.0:
+                cloudlog.warning(
+                    f"[OBS-ENVELOPE] type={o_type} d_lat={d_lat:.2f} "
+                    f"obs_hw={obs_hw:.2f} margin={dynamic_margin:.2f} "
+                    f"clearance={required_clearance:.2f} push={push:.2f}"
+                )
+                self._last_obs_chk_t = now_ts
+        if max_left_push > 0:
+            target_offset = -max_left_push
+        elif max_right_push > 0:
+            target_offset = max_right_push
+        else:
+            target_offset = 0.0
+        target_offset = np.clip(target_offset, -2.0, 1.8)
+        _smooth_alpha = self.left_smooth_alpha if target_offset < 0 else OBSTACLE_SMOOTH_ALPHA
+        self.obs_smooth_offset = _smooth_alpha * target_offset + (1 - _smooth_alpha) * self.obs_smooth_offset
         self.obs_target_offset = self.obs_smooth_offset
         self.obs_curv_gain = np.clip(curv_gain, 1.0, OBS_EXTRA_GAIN_MAX)
         self.obs_closest_dist = min_dist
         self.has_static_obstacle = has_static
         self.has_roadside_parked = has_roadside_parked
+        self.has_left_pressure = has_left_pressure
+        prev = getattr(self, '_obs_profile_prev', np.zeros(TRAJECTORY_SIZE))
+        a = OBSTACLE_SMOOTH_ALPHA
+        profile_smooth = a * profile + (1 - a) * prev
+        self._obs_profile_prev = profile_smooth.copy()
+        self.obs_offset_profile = np.clip(profile_smooth, -1.8, 1.8).astype(np.float32)
 
     def _calc_nav_dynamic_release(self, sm):
         cross_total_len, cross_remain_dist, turn_dir, has_target_lane, is_short_cross, is_mid_cross = get_nav_cross_info()
         release_dist = NAV_DYNAMIC_DIST_DEFAULT
-
         if cross_total_len > 0:
             if is_short_cross:
                 release_dist = NAV_DYNAMIC_DIST_SHORT
@@ -389,12 +563,10 @@ class LateralPlanner:
                 release_dist = NAV_DYNAMIC_DIST_MID
             else:
                 release_dist = NAV_DYNAMIC_DIST_LONG
-
         if g_big_cross:
             release_dist = max(release_dist, NAV_DYNAMIC_DIST_MID)
         if g_narrow_road:
             release_dist = max(release_dist, NAV_DYNAMIC_DIST_MID)
-
         self.nav_release_dist = release_dist
         self.nav_last_turn_dir = turn_dir
         need_extend = has_target_lane and cross_remain_dist < (release_dist + 50)
@@ -407,9 +579,7 @@ class LateralPlanner:
             cross_remain_dist = NAV_MSG_DATA.get("cross_remain_dist", 9999)
             speed_limit = NAV_MSG_DATA.get("speed_limit", 0)
             is_ramp = NAV_MSG_DATA.get("is_ramp", False)
-
             ramp_to_highway = is_ramp and speed_limit > 80
-
             if turn_active and ramp_to_highway:
                 if cross_remain_dist < MERGE_TRIGGER_DIST:
                     return MERGE_SPEED_BOOST
@@ -438,20 +608,38 @@ class LateralPlanner:
             LATERAL_JERK_COST = self.params.get_float("LatMpcJerkCost") * 0.01
             STEERING_RATE_COST = self.params.get_float("LatMpcSteeringRateCost")
             self.default_steering_rate_cost = STEERING_RATE_COST
+            self.left_boost = 1.15
+            self.left_smooth_alpha = 0.55
+            self.left_gravity = 0.30
 
         if high_speed_mode:
-            self.obs_target_offset = 0.0
-            self.obs_smooth_offset = 0.0
-            self.obs_curv_gain = 1.0
-            self.obs_closest_dist = float("inf")
-            self.has_static_obstacle = False
-            self.has_roadside_parked = False
+            if self.v_ego > 110.0 / 3.6:
+                self.obs_target_offset = 0.0
+                self.obs_smooth_offset = 0.0
+                self.obs_curv_gain = 1.0
+                self.obs_closest_dist = float("inf")
+                self.has_static_obstacle = False
+                self.has_roadside_parked = False
+                self.has_left_pressure = False
+            else:
+                self.obs_target_offset = 0.0
+                self.obs_smooth_offset = 0.15 * self.obs_smooth_offset
+                self.obs_curv_gain = 1.0
+                self.obs_closest_dist = min(self.obs_closest_dist, 20.0)
+                self.has_static_obstacle = True
+                self.has_roadside_parked = False
+                self.has_left_pressure = False
         else:
             self._calc_obstacle_avoid_param(carrot)
 
+        # 盲区雷达兜底逻辑已移至 _in_turn_scene 判定之后(下方),转弯/弯道场景排除,避免误触发降速。
+
         measured_curvature = sm['controlsState'].curvature
         v_ego_car = sm['carState'].vEgo
-        self.curve_speed = sm['carrotMan'].vTurnSpeed
+        try:
+            self.curve_speed = sm['carrotMan'].vTurnSpeed
+        except Exception:
+            self.curve_speed = 0.0
         v_kph = v_ego_car * 3.6
         speed_steer_gain = float(np.interp(v_kph, SPEED_GRID_KPH, PLAN_GAIN_TABLE))
 
@@ -463,7 +651,7 @@ class LateralPlanner:
         try:
             act_steer_deg = sm['carState'].steeringAngleDeg
             des_steer_deg = self.lat_mpc.x_sol[0, 3] * 180 / np.pi
-            angle_err = abs(des_steer_deg - act_steer_deg)
+            angle_err = abs(act_steer_deg - des_steer_deg)
             if angle_err > ANGLE_ERR_THRESH:
                 speed_steer_gain *= ANGLE_ERR_EXTRA_GAIN
         except Exception:
@@ -471,7 +659,7 @@ class LateralPlanner:
             des_steer_deg = 0.0
 
         right_turn_comp = 0.0
-        if des_steer_deg > RIGHT_TURN_ANGLE_THRESH:
+        if des_steer_deg < -RIGHT_TURN_ANGLE_THRESH:
             right_turn_comp = RIGHT_TURN_CURV_COMP
 
         blinker_gain = 0.70 if self.blinker_active else 1.0
@@ -482,6 +670,49 @@ class LateralPlanner:
         nav_active = is_nav_active()
         uturn_active = is_u_turn()
         right_turn_active = is_right_turn()
+        _RT_MEM_TIMEOUT = 4.0
+        if not hasattr(self, '_rt_mem'):
+            self._rt_mem = False
+            self._rt_mem_t = 0.0
+        _y_mean_rt = float(np.mean(self.y_pts)) if len(self.y_pts) else 0.0
+        # 车辆自身右转证据(完全不依赖导航)：
+        #   1) 右转向灯亮            —— 最直接、无歧义
+        #   2) 右打方向(des_steer_deg 为负且越过阈值)
+        #   3) 路径已明显偏右(_y_mean_rt 正=右) —— 维持已建立的右转，避免抖动退出
+        # 只要命中其一即视为右转场景 → _sign=+1.0 → 路径贴右。导航开不开都生效。
+        try:
+            _right_blink = bool(sm['carState'].rightBlinker)
+        except Exception:
+            _right_blink = False
+        _rt_self = (_right_blink
+                    or (des_steer_deg < -RIGHT_TURN_ANGLE_THRESH)
+                    or (_y_mean_rt > 0.20))
+        # _rt_mem：右转证据消失后保持一小段时间，平滑退出(低速停车时冻结超时不重置)
+        if _rt_self:
+            self._rt_mem = True
+            self._rt_mem_t = now_ts
+        elif _y_mean_rt < -0.20:
+            self._rt_mem = False
+        if self._rt_mem and (now_ts - self._rt_mem_t) > _RT_MEM_TIMEOUT:
+            self._rt_mem = False
+        _is_stopped_rt = self.v_ego < 0.5
+        if self._rt_mem and _is_stopped_rt:
+            self._rt_mem_t = now_ts
+        # 右转场景 = 导航右转 OR 记忆 OR 车辆自身右转证据。三者任一即贴右，绝不依赖导航。
+        right_turn_active = right_turn_active or self._rt_mem or _rt_self
+        try:
+            if _y_mean_rt > 0.30:
+                _set_right_turn_early(True)
+            elif _y_mean_rt < -0.20:
+                _set_right_turn_early(False)
+        except Exception:
+            pass
+        try:
+            _md_for_corner = sm['modelV2']
+            _corner_angle = estimate_turn_angle(_md_for_corner)
+        except Exception:
+            _corner_angle = 0.0
+        is_cornering = _corner_angle >= CORNERING_ANGLE_THRESH
         left_turn_active = is_left_turn()
         turn_locked = is_turn_active()
 
@@ -491,12 +722,43 @@ class LateralPlanner:
         if global_in_turn and (now_ts - global_turn_lock_ts) > TURN_LOCK_TIMEOUT:
             global_in_turn = False
 
-        if nav_active and (right_turn_active or left_turn_active or g_big_cross or turn_locked):
-            self.lat_mpc.nav_gain = 1.45
+        _in_turn_scene = left_turn_active or right_turn_active or (g_big_cross and not right_turn_active) or (g_narrow_road and not right_turn_active) or turn_locked or global_in_turn or is_cornering
+
+        md_for_corner = sm['modelV2']
+        _turn_angle_val = estimate_turn_angle(md_for_corner)
+        is_cornering = _turn_angle_val > CORNERING_ANGLE_THRESH or is_cornering
+
+        _steer_on = (abs(des_steer_deg) > self._steer_active_enter_deg) or right_turn_active or left_turn_active or is_cornering or self._rt_mem
+        _steer_off = (abs(des_steer_deg) < self._steer_active_exit_deg) and (not right_turn_active) and (not left_turn_active) and (not is_cornering) and (not self._rt_mem)
+        if _steer_on:
+            self._steer_active_hyst = True
+        elif _steer_off:
+            self._steer_active_hyst = False
+        steer_active = self._steer_active_hyst
+        is_cornering = is_cornering or steer_active
+        _in_turn_scene = left_turn_active or right_turn_active or (g_big_cross and not right_turn_active) or (g_narrow_road and not right_turn_active) or turn_locked or global_in_turn or is_cornering
+
+        # 盲区雷达兜底:右侧盲区确认有车(停放/对向)时,即便主雷达漏检也置位 has_roadside_parked,
+        # 让 longitudinal_planner 触发降速/停车(否则"过不去却不减速")。
+        # ★ 仅在「非高速 + 非转弯/弯道/窄路/交叉口」时生效:否则盲区把弯道护栏/对向车误判为
+        #   路侧停车 → 转弯时 longitudinal 误降速,表现为"转弯迟迟不给角度";且高速分支(615-631)
+        #   已清掉该标志,此处不再越权置位(避免高速也减速)。
+        if not high_speed_mode and not _in_turn_scene:
+            try:
+                from openpilot.selfdrive.carrot.amap_navi import NAV_MSG_DATA
+                if NAV_MSG_DATA.get("has_right_obstacle", False):
+                    self.has_roadside_parked = True
+            except Exception:
+                pass
+
+        if nav_active and (left_turn_active or right_turn_active or (g_big_cross and not right_turn_active) or turn_locked or is_cornering):
+            self.lat_mpc.nav_gain = 1.25
         else:
             self.lat_mpc.nav_gain = 1.0
 
         temp_path_cost = self.lateralPathCost
+        temp_motion_cost = self.lateralMotionCost
+        temp_steer_rate_cost = self.default_steering_rate_cost
 
         if not high_speed_mode and self.has_static_obstacle and self.obs_closest_dist < 20.0:
             temp_steer_rate_cost = self.default_steering_rate_cost * OBS_STEER_RATE_DAMP * speed_steer_gain
@@ -524,17 +786,38 @@ class LateralPlanner:
         else:
             temp_path_cost *= speed_steer_gain
 
-        # ========== ✅ 修改 1：大幅放宽最大曲率 ==========
-        base_max_curv = 0.055 if (left_turn_active or right_turn_active or g_big_cross or global_in_turn) else 0.042
+        if _in_turn_scene or steer_active:
+            temp_path_cost = temp_path_cost * TURN_PATH_COST_MULT
+            temp_motion_cost = temp_motion_cost * TURN_MOTION_COST_MULT
+            if right_turn_active:
+                temp_steer_rate_cost = temp_steer_rate_cost * 0.85
+            else:
+                temp_steer_rate_cost = temp_steer_rate_cost * TURN_STEER_RATE_MULT
+        if steer_active and not _in_turn_scene:
+            temp_path_cost = temp_path_cost * (1.2 / TURN_PATH_COST_MULT)
+            temp_motion_cost = temp_motion_cost * (0.85 / TURN_MOTION_COST_MULT)
+            temp_steer_rate_cost = temp_steer_rate_cost * 0.9
+
+        if right_turn_active or is_cornering:
+            base_max_curv = 0.120
+        elif left_turn_active or g_big_cross or global_in_turn:
+            base_max_curv = 0.075
+        else:
+            base_max_curv = 0.055
         if self.has_static_obstacle:
             curr_max_curv = base_max_curv * STATIC_CURV_LIMIT_SCALE
         else:
             curr_max_curv = base_max_curv
         measured_curvature = np.clip(measured_curvature, -curr_max_curv, curr_max_curv)
 
-        # ========== ✅ 修改 2：低速限幅大幅放宽 ==========
+        # ★ 低速曲率限幅放宽（原 0.072/0.040/0.032 太小，抵消了前面的放宽效果）
         if self.v_ego < 30:
-            measured_curvature = np.clip(measured_curvature, -0.032, 0.032)
+            if right_turn_active or is_cornering:
+                measured_curvature = np.clip(measured_curvature, -0.110, 0.110)
+            elif is_cornering:
+                measured_curvature = np.clip(measured_curvature, -0.075, 0.075)
+            else:
+                measured_curvature = np.clip(measured_curvature, -0.055, 0.055)
 
         md = sm['modelV2']
         model_valid = (len(md.position.x) == TRAJECTORY_SIZE and len(md.orientation.x) == TRAJECTORY_SIZE)
@@ -551,29 +834,142 @@ class LateralPlanner:
                 raw_y += LEFT_TURN_GLOBAL_OFFSET
 
             vkph = self.v_ego * 3.6
-            if left_turn_active or right_turn_active or g_big_cross:
-                smooth_alpha = 0.11
+            _lane_probs = None
+            try:
+                _lane_probs = md.laneLineProbs
+            except Exception:
+                _lane_probs = None
+            _lane_fade = False
+            if _lane_probs is not None and len(_lane_probs) >= 3:
+                _min_lane_prob = min(float(_lane_probs[0]), float(_lane_probs[2]))
+                if 0 < _min_lane_prob < LANE_PROB_NARROW_THRESH:
+                    _lane_fade = True
+                    if (now_ts - getattr(self, '_last_lane_fade_log_t', 0.0)) > 5.0:
+                        cloudlog.info(f"[LaneFade] low prob L={_lane_probs[0]:.2f} R={_lane_probs[2]:.2f} alpha={LANE_FADE_ALPHA}")
+                        self._last_lane_fade_log_t = now_ts
+
+            if _lane_fade:
+                smooth_alpha = LANE_FADE_ALPHA
+            elif steer_active:
+                smooth_alpha = 0.10
+            elif right_turn_active or is_cornering:
+                smooth_alpha = 0.0
+            elif not self.right_turn_released and (now_ts - self.right_turn_lock_ts) <= TURN_EXIT_TRANSITION_TIME:
+                smooth_alpha = 0.35
             elif vkph > 100:
                 smooth_alpha = 0.80
             elif vkph > 40:
                 smooth_alpha = 0.45
             else:
-                smooth_alpha = 0.22
+                smooth_alpha = 0.35
+
+            if not self.right_turn_released and (now_ts - self.right_turn_lock_ts) <= TURN_EXIT_TRANSITION_TIME:
+                smooth_y_prev = 0.6 * smooth_y_prev + 0.4 * raw_y
+                smooth_yaw_prev *= 0.6
 
             smooth_y = smooth_alpha * smooth_y_prev + (1 - smooth_alpha) * raw_y
             smooth_yaw = smooth_alpha * smooth_yaw_prev + (1 - smooth_alpha) * raw_yaw
             smooth_y_prev = smooth_y.copy()
             smooth_yaw_prev = smooth_yaw.copy()
 
+
+            _pure_straight = (not steer_active) and (not is_cornering) and (not right_turn_active) and (not left_turn_active)
+            if _pure_straight:
+                _far_mean = np.abs(smooth_y[20:].mean()) if len(smooth_y) > 20 else 0.0
+                if _far_mean > 0.3:
+                    _decay = np.linspace(1.0, 0.5, len(smooth_y))
+                    smooth_y = smooth_y * _decay
+
+            if ROADEDGE_BOUND_ENABLED:
+                try:
+                    _edges = md.roadEdges
+                    _edge_L = _edges[0]
+                    _edge_R = _edges[1]
+                    _ep_L = float(_edge_L.prob)
+                    _ep_R = float(_edge_R.prob)
+                    _ey_L = float(_edge_L.y)
+                    _ey_R = float(_edge_R.y)
+                    _edge_std_L = float(md.roadEdgeStds[0]) if len(md.roadEdgeStds) > 0 else 0.0
+                    _edge_std_R = float(md.roadEdgeStds[1]) if len(md.roadEdgeStds) > 1 else 0.0
+
+                    _lane_w = (self.LP.lane_width_left + self.LP.lane_width_right) / 2.0
+                    _y0 = smooth_y[0]
+                    _norm_pos = np.clip(_y0 / (_lane_w / 2.0), -2.0, 2.0) if _lane_w > 0.5 else 0.0
+
+                    _ll_prob_L = float(md.laneLineProbs[0]) if len(md.laneLineProbs) > 0 else 0.0
+                    _ll_prob_R = float(md.laneLineProbs[2]) if len(md.laneLineProbs) > 2 else 0.0
+                    self._deviation_dir = 0
+                    if _norm_pos < -DEVIATION_NORM_THRESH and _ll_prob_L > 0.30:
+                        smooth_y = smooth_y + DEVIATION_CORRECT_STEP
+                        self._deviation_dir = -1
+                    elif _norm_pos > DEVIATION_NORM_THRESH and _ll_prob_R > 0.30:
+                        smooth_y = smooth_y - DEVIATION_CORRECT_STEP
+                        self._deviation_dir = 1
+
+                    if _lane_fade and _ep_L > ROAD_EDGE_PROB_THRESH and _ep_R > ROAD_EDGE_PROB_THRESH:
+                        _edge_center = (_ey_L + _ey_R) / 2.0
+                        smooth_y = (1.0 - ROADEDGE_CENTER_BLEND) * smooth_y + ROADEDGE_CENTER_BLEND * np.full_like(smooth_y, _edge_center)
+                        self._edge_center_offset = _edge_center
+                        self._edge_valid = True
+                    else:
+                        self._edge_valid = (_ep_L > ROAD_EDGE_PROB_THRESH or _ep_R > ROAD_EDGE_PROB_THRESH)
+
+                    if _ep_R > ROAD_EDGE_PROB_THRESH:
+                        _hard_R = _ey_R - ROAD_EDGE_SAFE_MARGIN - _edge_std_R * 0.5
+                        smooth_y = np.clip(smooth_y, -10.0, _hard_R)
+                    if _ep_L > ROAD_EDGE_PROB_THRESH:
+                        _hard_L = _ey_L + ROAD_EDGE_SAFE_MARGIN + _edge_std_L * 0.5
+                        smooth_y = np.clip(smooth_y, _hard_L, 10.0)
+
+                    if right_turn_active and g_narrow_road:
+                        if _ll_prob_L > 0.30:
+                            _left_bound = _ey_L + ROAD_EDGE_SAFE_MARGIN if _ep_L > ROAD_EDGE_PROB_THRESH else (-lane_w_left / 2.0 + 0.05)
+                            smooth_y = np.clip(smooth_y, _left_bound, 10.0)
+                        _end_idx = min(len(smooth_y) - 1, 25)
+                        if smooth_y[_end_idx] > NARROW_ROAD_RIGHT_TURN_MAX_Y:
+                            smooth_y[_end_idx:] = np.clip(smooth_y[_end_idx:], -10.0, NARROW_ROAD_RIGHT_TURN_MAX_Y)
+                        if abs(measured_curvature) > 0.080:
+                            measured_curvature = np.sign(measured_curvature) * 0.080
+
+                    if left_turn_active and _ep_L > ROAD_EDGE_PROB_THRESH:
+                        _hard_L = _ey_L + ROAD_EDGE_SAFE_MARGIN + _edge_std_L * 0.5
+                        smooth_y = np.clip(smooth_y, _hard_L, 10.0)
+
+                    if (now_ts - getattr(self, '_last_edge_log_t', 0.0)) > 8.0:
+                        cloudlog.info(f"[RoadEdge] Lprob={_ep_L:.2f} Rprob={_ep_R:.2f} "
+                                      f"dev={'LEFT' if self._deviation_dir==-1 else ('RIGHT' if self._deviation_dir==1 else 'OK')} "
+                                      f"narrow={g_narrow_road} turnR={right_turn_active}")
+                        self._last_edge_log_t = now_ts
+                except Exception:
+                    pass
+
             self.path_xyz[:, 1] = smooth_y
             self.plan_yaw = smooth_yaw
             self.plan_yaw_rate = np.array(md.orientationRate.z)
             self.velocity_xyz = np.column_stack([md.velocity.x, md.velocity.y, md.velocity.z])
             car_speed = np.linalg.norm(self.velocity_xyz, axis=1) - get_speed_error(md, v_ego_car)
-            self.v_plan = np.clip(car_speed, MIN_SPEED, np.inf)
-            self.v_ego = self.v_plan[0]
-            self.plan_a = np.array(md.acceleration.x)
+            self.v_plan = np.maximum(car_speed, self.v_ego)  # ← 加这一行
+            # ★★★ 修复：高速弯道平滑减速（每帧最多降 _V_DECEL_STEP_CURV m/s）★★★
+            _target_v = self.v_ego
+            if _in_turn_scene or is_cornering or abs(measured_curvature) > 0.001:
+                _turn_min = max(self.turn_decel_min_kph / 3.6, 12.0 / 3.6)
+                _turn_target = max(self.curve_decel_speed_kph / 3.6, _turn_min)
+                _target_v = _turn_target
+                self.curve_decel_active = True
+            else:
+                self.curve_decel_active = False
 
+            if self.v_ego > _target_v:
+                # 每帧最多降 _V_DECEL_STEP_CURV (约 2km/h per frame)
+                _max_drop = _V_DECEL_STEP_CURV * self.v_ego
+                self.v_ego = max(self.v_ego - _max_drop, _target_v)
+            else:
+                self.v_ego = max(_target_v, self.v_ego)
+
+            self.v_plan[0] = self.v_ego
+
+
+            self.plan_a = np.array(md.acceleration.x)
             LAST_VALID_PATH_Y = self.path_xyz[:, 1].copy()
             LAST_VALID_PATH_YAW = self.plan_yaw.copy()
 
@@ -588,6 +984,22 @@ class LateralPlanner:
             self.path_xyz[:, 1] = LAST_VALID_PATH_Y
             self.plan_yaw = LAST_VALID_PATH_YAW
 
+        _raw_y_mean = float(np.mean(raw_y)) if model_valid and len(raw_y) else 0.0
+        if right_turn_active and _raw_y_mean > 0.20:
+            _shape = self.path_xyz[:, 1] - self.path_xyz[0, 1]
+            self._rt_path_mem = _shape.copy()
+            self._rt_path_mem_valid = True
+            if abs(measured_curvature) > 1e-4:
+                self._rt_curv_mem = abs(measured_curvature)
+                self._rt_curv_mem_valid = True
+        elif right_turn_active and self._rt_path_mem_valid and self.v_ego < 1.0:
+            _decay = max(0.55, 1.0 - 0.02 * (now_ts - self._rt_mem_t))
+            _reuse = self._rt_path_mem * _decay
+            self.path_xyz[:, 1] = self.path_xyz[0, 1] + _reuse
+        if not self._rt_mem and self._rt_path_mem_valid and (now_ts - self._rt_mem_t) > _RT_MEM_TIMEOUT:
+            self._rt_path_mem_valid = False
+            self._rt_curv_mem_valid = False
+
         if self.merge_boost > 0:
             self.v_plan = np.clip(self.v_plan + self.merge_boost / 3.6, MIN_SPEED, np.inf)
             self.v_ego = self.v_plan[0]
@@ -596,8 +1008,6 @@ class LateralPlanner:
 
         if global_in_turn and not high_speed_mode:
             self.LP.obstacle_avoid_scale = 0.6
-        elif global_in_turn:
-            self.LP.obstacle_avoid_scale = 1.0
         else:
             self.LP.obstacle_avoid_scale = 1.0
 
@@ -606,7 +1016,11 @@ class LateralPlanner:
         lane_w_left = self.LP.lane_width_left
         lane_w_right = self.LP.lane_width_right
 
-        if g_big_cross:
+        if right_turn_active:
+            curr_margin = BASE_MARGIN_NORMAL
+            base_scale = SCALE_NORMAL
+            turn_scale = 1.0
+        elif g_big_cross:
             curr_margin = BASE_MARGIN_BIG
             base_scale = SCALE_BIG
         elif g_narrow_road:
@@ -665,14 +1079,14 @@ class LateralPlanner:
 
         if left_turn_active or is_left_turn_scene:
             safe_left += 0.16
-            self.path_xyz[:, 1] -= 0.06
+            self.path_xyz[:, 1] += 0.10
         if right_turn_active:
             safe_right = lane_right_bound - RIGHT_TURN_SAFE_MARGIN
-            self.path_xyz[:, 1] += RIGHT_TURN_FIX_OFFSET
+            self.path_xyz[:, 1] += 0.10
         if is_left_turn_scene or left_turn_active:
             safe_left += 0.05
 
-        if not high_speed_mode:
+        if not high_speed_mode and not _in_turn_scene:
             if self.has_roadside_parked:
                 if self.obs_closest_dist < 15.0:
                     safe_left -= 1.0
@@ -689,9 +1103,35 @@ class LateralPlanner:
                     safe_left -= 0.3
                     safe_right += 0.3
 
-        self.path_xyz[:, 1] = np.clip(self.path_xyz[:, 1], safe_left, safe_right)
-        self.path_xyz[:, 1] = np.clip(self.path_xyz[:, 1], GLOBAL_Y_MIN, GLOBAL_Y_MAX)
+        if not _in_turn_scene:
+            self.path_xyz[:, 1] = np.clip(self.path_xyz[:, 1], safe_left, safe_right)
+
+        try:
+            _avail = float(safe_right - safe_left)
+            if _avail > 0:
+                self.available_road_width = _avail
+        except Exception:
+            pass
+
+        _in_exit_window = (not self.right_turn_released) and (now_ts - self.right_turn_lock_ts) <= TURN_EXIT_TRANSITION_TIME
+        if right_turn_active:
+            _gy_max = GLOBAL_Y_MAX
+            _gy_min = GLOBAL_Y_MIN
+        elif _in_exit_window:
+            _gy_max = GLOBAL_Y_MAX_EXIT
+            _gy_min = -GLOBAL_Y_MAX_EXIT
+        else:
+            _gy_max = GLOBAL_Y_MAX
+            _gy_min = GLOBAL_Y_MIN
+        self.path_xyz[:, 1] = np.clip(self.path_xyz[:, 1], _gy_min, _gy_max)
         LAST_VALID_PATH_Y = self.path_xyz[:, 1].copy()
+
+        if right_turn_active or left_turn_active or g_big_cross or turn_locked:
+            ramp = np.clip(np.arange(TRAJECTORY_SIZE) / max(TRAJECTORY_SIZE - 1, 1), 0.0, 1.0)
+            if right_turn_active or (g_big_cross and global_turn_lock_ts != 0.0):
+                self.path_xyz[:, 1] += (-TURN_RAMP_OFFSET_UI) * ramp
+            if left_turn_active:
+                self.path_xyz[:, 1] += TURN_RAMP_OFFSET_UI * ramp
 
         if nav_active:
             need_extend, turn_dir = self._calc_nav_dynamic_release(sm)
@@ -706,10 +1146,75 @@ class LateralPlanner:
         else:
             self.nav_lane_extended = False
 
-        # ========== 【新增】障碍物避让打灯逻辑（不破坏原导航变道打灯）==========
+        _cs = get_carrot_serv_instance()
+        _drv_left = False
+        _drv_right = False
+        try:
+            _drv_left = bool(sm['carState'].leftBlinker)
+            _drv_right = bool(sm['carState'].rightBlinker)
+        except Exception:
+            pass
+        _drv_dir = 0
+        if _drv_left and not _drv_right:
+            _drv_dir = 1
+        elif _drv_right and not _drv_left:
+            _drv_dir = -1
+
+        _turn_just_ended = (not self.right_turn_released) and (not right_turn_active)
+
+        _standstill = False
+        _has_lead = False
+        try:
+            _standstill = bool(sm['carState'].standstill)
+        except Exception:
+            pass
+        try:
+            _lead = sm['radarState'].leadOne
+            _has_lead = bool(_lead.status) and float(_lead.dRel) < 40.0 and abs(float(_lead.yRel)) < 1.5
+        except Exception:
+            _has_lead = False
+        _follow_block = (_standstill and _has_lead)
+
+        _safe_to_boost = True
+        _has_roadside = False
+        try:
+            try:
+                _obs_list = carrot.obstacles
+            except Exception:
+                _obs_list = []
+            for _obs in _obs_list:
+                try:
+                    _d_long = float(_obs.longDistance)
+                    _d_lat = float(_obs.latDistance)
+                    _o_type = str(_obs.type)
+                except Exception:
+                    continue
+                if _d_long > OBSTACLE_MAX_DETECT_LONG or _d_long < 0.5:
+                    continue
+                if _d_long < 30.0 and abs(_d_lat) < 0.8:
+                    if _o_type in ("static", "unknown", "oncoming"):
+                        _safe_to_boost = False
+                        break
+                if abs(_d_lat) > 1.2 and _o_type in ("parked", "static", "unknown"):
+                    _has_roadside = True
+        except Exception:
+            pass
+
+        if (_drv_dir != 0 and self.v_ego < self.blinker_avoid_speed_max
+                and not _follow_block and _safe_to_boost
+                and not _turn_just_ended):
+            _base_boost = 0.4
+            _extra = _drv_dir * self.blinker_avoid_boost if _has_roadside else 0.0
+            self.obs_smooth_offset = np.clip(
+                self.obs_smooth_offset + _drv_dir * _base_boost + _extra, -2.0, 1.8)
+            self.obs_target_offset = self.obs_smooth_offset
+            try:
+                _cs.set_blinker_request(BLINKER_LEFT if _drv_dir == 1 else BLINKER_RIGHT)
+            except Exception:
+                pass
+
         want_blinker = False
         blinker_dir = 0.0
-
         if not high_speed_mode and self.obs_closest_dist < MIN_OBS_DIST_TO_BLINK:
             if self.has_roadside_parked or self.has_static_obstacle:
                 want_blinker = True
@@ -721,20 +1226,23 @@ class LateralPlanner:
                 self.blinker_dir = blinker_dir
                 self.blinker_delay_ts = now_ts + BLINKER_DELAY_TIME
                 self.blinker_request_ts = now_ts
-            # 持续续期 hold_ts，障碍物消失后自然过期
             self.blinker_hold_ts = now_ts + BLINKER_HOLD_TIME
-            # 通过 carrot_serv.set_blinker_request 发送打灯信号（与导航变道共用 ext_blinker 通道）
             try:
-                carrot.carrot_serv.set_blinker_request(int(self.blinker_dir))
+                try:
+                    carrot.carrot_serv.set_blinker_request(int(self.blinker_dir))
+                except Exception:
+                    pass
             except Exception:
                 pass
         else:
-            # 障碍物消失，等 hold_ts 过期后重置状态并熄灭转向灯
             if self.blinker_active and now_ts > self.blinker_hold_ts:
                 self.blinker_active = False
                 self.avoidance_active = False
                 try:
-                    carrot.carrot_serv.set_blinker_request(0)
+                    try:
+                        carrot.carrot_serv.set_blinker_request(0)
+                    except Exception:
+                        pass
                 except Exception:
                     pass
 
@@ -746,28 +1254,102 @@ class LateralPlanner:
         else:
             self.avoidance_active = False
 
-        # 避让激活时用全量偏移，否则仅 20%
-        if self.avoidance_active:
-            final_offset = self.pathOffset - last_truck_offset + self.obs_smooth_offset
+        if right_turn_active:
+            self.right_turn_lock_ts = now_ts
+            self.right_turn_released = False
+        elif not self.right_turn_released and (now_ts - self.right_turn_lock_ts) > TURN_EXIT_TRANSITION_TIME:
+            self.right_turn_released = True
+
+        turn_just_ended = (not self.right_turn_released) and (not right_turn_active)
+
+        if right_turn_active:
+            _po = self.pathOffset
+            if self.v_ego < 1.0:
+                _po = max(self.pathOffset, 0.30)
+            final_offset = self.obs_smooth_offset * IN_TURN_AVOID_SCALE + _po
+        elif turn_just_ended:
+            _obs_part = max(0.0, self.obs_smooth_offset) * 0.5
+            final_offset = -last_truck_offset * 0.5 + _obs_part
         else:
-            final_offset = self.pathOffset - last_truck_offset + self.obs_smooth_offset * 0.2
-        # ========== 【新增结束】 ==========
+            final_offset = self.pathOffset - last_truck_offset + self.obs_smooth_offset
+
+        final_offset = np.clip(final_offset, -1.8, 1.5)
+
+        if (now_ts - getattr(self, '_last_obs_chk2_t', 0.0)) > 5.0:
+            cloudlog.warning(f"[OBS-CHK] final_offset={final_offset:.2f} y0={self.path_xyz[0, 1]:.2f} steer={sm['carState'].steeringAngleDeg:.1f} dsteer={des_steer_deg:.1f} curv={measured_curvature:.4f} rblink={_right_blink} rt_act={right_turn_active} rt_mem={self._rt_mem} closest={self.obs_closest_dist:.1f}")
+            self._last_obs_chk2_t = now_ts
+
+        _prof = getattr(self, 'obs_offset_profile', None)
+        if _prof is not None and len(_prof) == TRAJECTORY_SIZE and not right_turn_active:
+            self.path_xyz[:, 1] += _prof
+            # ★ 大货车压线修复：左侧安全偏移必须叠加，不能被障碍廓线覆盖。
+            #   obs_offset_profile 只来自主雷达 carrot.obstacles，与盲区/侧车探测
+            #   (amap_navi 写入 truck_left_offset → last_truck_offset) 是不同源；
+            #   原逻辑在 _prof 有效时整体改用 _prof，导致右有大车时的横向避险
+            #   偏移(final_offset 中的 -last_truck_offset)被完全丢弃 → 高速大货车
+            #   压线不偏移。这里恒叠加卡车左移，转弯分支已由 final_offset 覆盖。
+            self.path_xyz[:, 1] -= last_truck_offset
+            if (now_ts - getattr(self, '_last_truck_log_t', 0.0)) > 5.0:
+                cloudlog.info(f"[TRUCK-OFFSET] applied=-{last_truck_offset:.2f} "
+                              f"prof_max={float(np.max(np.abs(_prof))):.2f} y0={self.path_xyz[0, 1]:.2f}")
+                self._last_truck_log_t = now_ts
+        else:
+            self.path_xyz[:, 1] += final_offset
+
+        if self.has_left_pressure:
+            _g = float(np.clip(getattr(self, 'left_gravity', 0.30), 0.0, 1.0))
+            _prof = getattr(self, 'obs_offset_profile', None)
+            if _g > 0.0 and _prof is not None and len(_prof) == TRAJECTORY_SIZE:
+                _sl = float(np.clip(safe_left, -4.5, 0.0))
+                _y = self.path_xyz[:, 1]
+                _w = np.abs(np.array(_prof, dtype=np.float64))
+                _w_max = float(np.max(_w))
+                if _w_max > 1e-6:
+                    _w = _w / _w_max
+                else:
+                    _w = np.zeros_like(_w)
+                _y = _y + (_sl - _y) * (_g * _w)
+                self.path_xyz[:, 1] = _y
+            _current_y0 = self.path_xyz[0, 1]
+            if _current_y0 > -0.10:
+                self.path_xyz[0, 1] = -0.10
+
+        self.path_xyz[:, 1] = np.clip(self.path_xyz[:, 1], GLOBAL_Y_MIN, _gy_max)
+
+        if _in_turn_scene and not right_turn_active:
+            _rate_limit = 0.30
+            _y = self.path_xyz[:, 1]
+            _y_limited = _y.copy()
+            for i in range(1, len(_y)):
+                _y_limited[i] = np.clip(_y[i], _y_limited[i-1] - _rate_limit, _y_limited[i-1] + _rate_limit)
+            self.path_xyz[:, 1] = _y_limited
+
+        if _in_exit_window and (now_ts - getattr(self, '_last_exit_chk_t', 0.0)) > 5.0:
+            _y_dbg = self.path_xyz[:, 1]
+            cloudlog.info(f"[EXIT-CHK] exit_window y_range=[{_y_dbg.min():.2f},{_y_dbg.max():.2f}] y0={_y_dbg[0]:.2f} y_mid={np.median(_y_dbg[5:20]):.2f}")
+            self._last_exit_chk_t = now_ts
+
+        LAST_VALID_PATH_Y = self.path_xyz[:, 1].copy()
 
         solid_line_block = LANE_CHANGE_SOLID_BLOCK and check_solid_lane_line(md)
-
         if solid_line_block:
             self.LP.lane_change_multiplier = 0.0
         elif nav_active:
-            cross_total_len, cross_remain_dist, turn_dir, has_target_lane, is_short_cross, is_mid_cross = get_nav_cross_info()
-            release_dist = self.nav_release_dist
-
-            if cross_remain_dist > release_dist:
-                self.LP.lane_change_multiplier = 0.0
-            else:
+            if right_turn_active:
                 if md.meta.desire != log.Desire.none or carrot.atc_active:
                     self.LP.lane_change_multiplier = 1.0
                 else:
                     self.LP.lane_change_multiplier = 0.0
+            else:
+                cross_total_len, cross_remain_dist, turn_dir, has_target_lane, is_short_cross, is_mid_cross = get_nav_cross_info()
+                release_dist = self.nav_release_dist
+                if cross_remain_dist > release_dist:
+                    self.LP.lane_change_multiplier = 0.0
+                else:
+                    if md.meta.desire != log.Desire.none or carrot.atc_active:
+                        self.LP.lane_change_multiplier = 1.0
+                    else:
+                        self.LP.lane_change_multiplier = 0.0
         else:
             if md.meta.desire != log.Desire.none or carrot.atc_active:
                 self.LP.lane_change_multiplier = 1.0
@@ -784,9 +1366,20 @@ class LateralPlanner:
 
         curvature = measured_curvature
         if right_turn_active:
-            curvature *= 1.15
+            curvature *= 1.28
+        elif is_cornering:
+            curvature *= 1.28
+        elif _lane_fade:
+            curvature *= LANE_FADE_CURV_GAIN
         if left_turn_active:
             curvature *= 1.12
+
+        if right_turn_active and self.v_ego < 1.0:
+            _curv_floor = 0.028
+            if self._rt_curv_mem_valid and self._rt_curv_mem > _curv_floor:
+                _curv_floor = self._rt_curv_mem
+            if abs(curvature) < _curv_floor:
+                curvature = _curv_floor
 
         if 0.0006 < abs(curvature) < 0.0015 and self.v_ego < 30:
             curvature = np.sign(curvature) * 0.0018
@@ -799,7 +1392,7 @@ class LateralPlanner:
 
         if nav_active:
             cross_total_len, cross_remain_dist, turn_dir, has_target_lane, is_short_cross, is_mid_cross = get_nav_cross_info()
-            if 0 < cross_remain_dist < IN_INTERSECTION_SOLID_DIST:
+            if 0 < cross_remain_dist < IN_INTERSECTION_SOLID_DIST and not right_turn_active:
                 self.LP.lane_change_multiplier = 0.0
 
         self.LP.lanefull_mode = self.useLaneLineMode
@@ -818,17 +1411,6 @@ class LateralPlanner:
         except Exception:
             pass
 
-        if right_turn_active or left_turn_active:
-            final_offset = 0.0 - last_truck_offset + self.obs_smooth_offset
-        else:
-            final_offset = self.pathOffset - last_truck_offset + self.obs_smooth_offset
-
-        final_offset = np.clip(final_offset, -0.6, 0.6)
-        self.path_xyz[:, 1] += final_offset
-        self.path_xyz[:, 1] = np.clip(self.path_xyz[:, 1], GLOBAL_Y_MIN, GLOBAL_Y_MAX)
-        LAST_VALID_PATH_Y = self.path_xyz[:, 1].copy()
-
-        # ========== ✅ 修改 3：高速锁舵软化（不再焊死） ==========
         HIGH_SPEED_LOCK = 80 / 3.6
         CURV_LOCK = 0.0006
         if self.v_ego > HIGH_SPEED_LOCK and abs(measured_curvature) < CURV_LOCK:
@@ -839,36 +1421,112 @@ class LateralPlanner:
         else:
             if self.v_ego > 100 / 3.6:
                 self.lat_mpc.set_weights(
-                    temp_path_cost * 0.85,
-                    self.lateralMotionCost * 1.2,
-                    LATERAL_ACCEL_COST * 1.5,
-                    LATERAL_JERK_COST * 2.0,
-                    temp_steer_rate_cost * 1.1,
-                    False,
-                    True,
-                    self.v_ego * 3.6
+                    temp_path_cost * 0.85, temp_motion_cost * 1.2,
+                    LATERAL_ACCEL_COST * 1.5, LATERAL_JERK_COST * 2.0,
+                    temp_steer_rate_cost * 1.1, False, True, self.v_ego * 3.6
                 )
             else:
                 self.lat_mpc.set_weights(
-                    temp_path_cost,
-                    self.lateralMotionCost,
-                    LATERAL_ACCEL_COST,
-                    LATERAL_JERK_COST,
-                    temp_steer_rate_cost,
-                    False,
-                    False,
-                    self.v_ego * 3.6
+                    temp_path_cost, temp_motion_cost,
+                    LATERAL_ACCEL_COST, LATERAL_JERK_COST,
+                    temp_steer_rate_cost, False, False, self.v_ego * 3.6
                 )
 
-        self.y_pts = self.path_xyz[:LAT_MPC_N + 1, 1]
+        if right_turn_active:
+            try:
+                from openpilot.selfdrive.carrot.amap_navi import NAV_MSG_DATA
+                _crd = float(NAV_MSG_DATA.get("cross_remain_dist", 60))
+            except Exception:
+                _crd = 60.0
+            if _crd < 100.0:
+                _tgt = max(8.0, 18.0 * (_crd / 100.0))
+                _tgt = min(_tgt, 20.0)
+            else:
+                _tgt = 20.0
+            if getattr(self, 'curve_speed', 0.0) > 0:
+                self.curve_speed = min(self.curve_speed, _tgt)
+            else:
+                self.curve_speed = _tgt
+            self.curve_decel_active = True
+
         heading_pts = self.plan_yaw[:LAT_MPC_N + 1]
         yaw_rate_pts = self.plan_yaw_rate[:LAT_MPC_N + 1]
 
         lateral_factor = np.clip(self.factor1 - (self.factor2 * self.v_plan ** 2), 0.0, np.inf)
         p = np.column_stack([self.v_plan, lateral_factor])
 
+        turn_y_pts = None
+        _curv_abs = abs(measured_curvature) if 'measured_curvature' in dir() else 0.0
         try:
-            self.lat_mpc.run(self.x0, p, self.y_pts, heading_pts, yaw_rate_pts)
+            _curv_abs = abs(float(measured_curvature))
+        except Exception:
+            _curv_abs = 0.0
+        _is_cornering_hug = (_curv_abs > CORNERING_LOW_SPEED_CLIP) and not is_intersection_left_turn(sm)
+        _turn_scene = right_turn_active or left_turn_active or _is_cornering_hug
+        if _turn_scene:
+            try:
+                if right_turn_active:
+                    _sign = 1.0
+                elif left_turn_active:
+                    _sign = -1.0
+                else:  # 过弯：本 fork 正曲率=右，按曲率符号贴向弯道内侧(切 apex)
+                    _sign = 1.0 if measured_curvature > 0 else -1.0
+
+                _t = np.linspace(0, 1, LAT_MPC_N + 1)
+                _sin_arc = np.sin(_t * np.pi)
+
+                try:
+                    from openpilot.selfdrive.carrot.amap_navi import NAV_MSG_DATA
+                    _cross_remain = float(NAV_MSG_DATA.get("cross_remain_dist", 60))
+                except Exception:
+                    _cross_remain = 60.0
+
+                _urg = np.clip((60.0 - min(_cross_remain, 60.0)) / 60.0, 0.0, 1.0)
+                _spd_f = np.clip(self.v_ego / 10.0, 0.5, 2.0)
+
+                # ★ 贴边量收敛：原来 _target 下限硬编码 1.2m（末端≈1.6m），叠加转弯本身
+                #   的曲率后转向需求顶到车辆极限 → openpilot steerSaturated
+                #   ("Turn Exceeds Steering Limit") 报接管、横向退出。这里把上限收到 1.6、
+                #   下限收到 0.5，贴边仍在(末端不回零)，但不再顶爆转向。
+                _target = min(1.2 * _urg * _spd_f, 1.6)
+                _target = max(_target, 0.5)
+
+                # ★ 形状(关键)：近场必须从 0 平滑起步，绝不能硬性横移。
+                #   之前用 _arc_base = _sign*0.40 让 t=0 处就有 0.40m 横移，近场 x 极小，
+                #   等效"假航向/假曲率"需求极大 → MPC 打满方向 → 饱和退出。
+                #   smoothstep s(t)=3t²-2t³：s(0)=0(近场不动) 且 s'(0)=0(近场无假曲率)，
+                #   末端 s(1)=1 且 s'(1)=0(保持最大、不回零"贴到最后")。
+                #   纯过弯 -> 仍用对称正弦(先切 apex 再回正)。
+                if right_turn_active or left_turn_active:
+                    _profile = _t * _t * (3.0 - 2.0 * _t)
+                else:
+                    _profile = _sin_arc
+                _arc = _profile * _target * _sign
+
+                if self.v_ego < 1.0 and self._rt_path_mem_valid:
+                    _arc = self._rt_path_mem[:LAT_MPC_N + 1].copy() * _sign
+                elif self.v_ego >= 1.0:
+                    self._rt_path_mem = np.abs(_arc) if right_turn_active else _arc.copy()
+                    self._rt_path_mem_valid = True
+
+                turn_y_pts = _arc
+            except Exception:
+                turn_y_pts = None
+
+        if right_turn_active and turn_y_pts is not None:
+            _blend = 0.70
+            _tpl = turn_y_pts[:TRAJECTORY_SIZE]
+            self.path_xyz[:, 1] = (1.0 - _blend) * self.path_xyz[:, 1] + _blend * _tpl
+            smooth_y = self.path_xyz[:, 1].copy()
+            smooth_y_prev = smooth_y.copy()
+        self.y_pts = self.path_xyz[:LAT_MPC_N + 1, 1]
+        if turn_y_pts is not None and len(turn_y_pts) > TRAJECTORY_SIZE:
+            turn_y_pts = turn_y_pts[:TRAJECTORY_SIZE]
+        self.turn_y_pts = turn_y_pts
+
+        try:
+            _run_turn_y = turn_y_pts if (_is_cornering_hug or right_turn_active or left_turn_active) else None
+            self.lat_mpc.run(self.x0, p, self.y_pts, heading_pts, yaw_rate_pts, _run_turn_y)
             if not np.all(np.isfinite(self.lat_mpc.x_sol)):
                 raise ValueError("MPC NaN")
             self.x_sol = self.lat_mpc.x_sol.copy()
@@ -880,6 +1538,11 @@ class LateralPlanner:
             self.solution_invalid_cnt = min(self.solution_invalid_cnt + 1, 5)
 
         current_steer = self.x_sol[0, 3]
+        if right_turn_active and LAT_MPC_N >= 2:
+            # ★ 近端前馈权重从 0.60 降到 0.15：60% 的近端转角前馈会把 MPC 需求放大，
+            #   是"转向顶到限幅 → steerSaturated 退出"的元凶之一。
+            _ff = float(self.x_sol[1, 3])
+            current_steer = 0.85 * current_steer + 0.15 * _ff
         if self.v_ego >= SPEED_HIGH:
             if self.v_ego >= 110 / 3.6:
                 current_steer = HIGH_SPEED_DAMP_PLUS * LAST_STEER_CMD + (1 - HIGH_SPEED_DAMP_PLUS) * current_steer
@@ -887,14 +1550,20 @@ class LateralPlanner:
                 current_steer = HIGH_SPEED_DAMP * LAST_STEER_CMD + (1 - HIGH_SPEED_DAMP) * current_steer
         LAST_STEER_CMD = current_steer
 
-        # ========== ✅ 修改 4：方向盘输出限幅大幅放宽 ==========
         if self.v_ego < 30:
-            current_steer = np.clip(current_steer, -0.93, 0.93)   # ≈ 53°
+            current_steer = np.clip(current_steer, -0.93, 0.93)
         else:
-            current_steer = np.clip(current_steer, -0.68, 0.68)   # ≈ 39°
+            current_steer = np.clip(current_steer, -0.78, 0.78)
+
+        # [SAT-CHK] 转向需求是否真的顶到限幅(接近/贴住 clip 上限就是饱和，
+        # 就会触发 openpilot 的 steerSaturated "Turn Exceeds Steering Limit" 接管)。
+        if abs(current_steer) > 0.85 and (now_ts - getattr(self, '_last_sat_t', 0.0)) > 5.0:
+            _ys = np.abs(self.path_xyz[:, 1])
+            cloudlog.warning(f"[SAT-CHK] steer={current_steer:.2f} y0={self.path_xyz[0,1]:.2f} y_max={_ys.max():.2f} y@5m={self.path_xyz[3,1]:.2f} curv={measured_curvature:.3f} rt={right_turn_active}")
+            self._last_sat_t = now_ts
 
         self.x_sol[:, 3] = current_steer
-        self.x0[3] = np.interp(DT_MDL, self.t_idxs[:LAT_MPC_N + 1], self.x_sol[:, 3])
+        self.x0[3] = np.interp(DT_MDL, self.t_idxs[:LAT_MPC_N + 1], self.x_sol[:LAT_MPC_N + 1, 3])
 
         mpc_nans = np.isnan(self.x_sol[:, 3]).any()
         t = time.monotonic()
@@ -908,45 +1577,163 @@ class LateralPlanner:
         else:
             self.solution_invalid_cnt = 0.0
 
+        # ========== ★UNIFIED 横纵联动：写入 CurveSync（含低速保护）==========
+        try:
+            _nav_v = abs(float(self.curve_speed or 0.0))
+            # ★ 修复：高速岔道用导航限速（如岔道限速60km/h），不再被 _decel_v(35) 钳制
+            if _nav_v > 1.0:
+                _t = _nav_v
+                # 有导航限速目标：需要纵向 planner 配合减速
+                self.curve_decel_active = True
+            else:
+                _t = max(float(getattr(self, 'curve_decel_speed_kph', 35.0)) / 3.6, 1.0)
+                # 无导航限速：仅低速弯道时激活减速
+                self.curve_decel_active = bool(self._steer_active_hyst or _in_turn_scene or is_cornering or abs(measured_curvature) > 0.001)
+            _is_real_turn = bool(self._steer_active_hyst or abs(float(measured_curvature)) > 0.001)
+            # ★ 修复：只要有有效目标速度就传给纵向（高速岔道也能生效）
+            if _t > 1.0 and self.curve_decel_active:
+                _conf = 1.0 if _nav_v > 1.0 else 0.6
+                CurveSync.set_from_lateral(_t, curvature=abs(float(measured_curvature)), is_real_corner=_is_real_turn, confidence=_conf)
+                self.curve_decel_target_v = _t
+            else:
+                CurveSync.set_from_lateral(0.0, force_zero=True)
+                self.curve_decel_target_v = 0.0
+        except Exception as e:
+            cloudlog.warning("[CurveSync] pub failed: %s", str(e))
+            self.curve_decel_target_v = 0.0
+        # ========== ★UNIFIED 结束 ==========
+
     def publish(self, sm, pm, carrot):
-        plan_solution_valid = self.solution_invalid_cnt < 1
-        plan_send = messaging.new_message('lateralPlan')
-        plan_send.valid = sm.all_checks(service_list=['carState', 'controlsState', 'modelV2'])
-        lateralPlan = plan_send.lateralPlan
-        lateralPlan.modelMonoTime = sm.logMonoTime['modelV2']
-
-        path_y = self.path_xyz[:, 1].copy()
-        path_y = np.clip(path_y, GLOBAL_Y_MIN, GLOBAL_Y_MAX)
-        lateralPlan.dPathPoints = path_y.tolist()
-
-        lateralPlan.psis = self.x_sol[0:CONTROL_N, 2].tolist()
-        lateralPlan.distances = self.x_sol[0:CONTROL_N, 0].tolist()
-
-        if len(self.v_plan) == TRAJECTORY_SIZE:
-            lateralPlan.curvatures = (self.x_sol[0:CONTROL_N, 3] / self.v_plan[0:CONTROL_N]).tolist()
+        now = time.monotonic()
+        if self.v_ego < 0.5:
+            target_period = 1.0 / PUBLISH_RATE_PARKED
+        elif self.v_ego < CONGESTION_VELO_THRESH:
+            target_period = 1.0 / PUBLISH_RATE_CONGESTED
         else:
-            lateralPlan.curvatureRates = [
-                float(x / self.v_ego) for x in self.lat_mpc.u_sol.flatten().tolist()
-            ] + [0.0]
+            target_period = 1.0 / PUBLISH_RATE_NORMAL
 
-        lateralPlan.mpcSolutionValid = bool(plan_solution_valid)
-        lateralPlan.solverExecutionTime = self.lat_mpc.solve_time
+        if (now - self._last_publish_t) < target_period:
+            return
+        self._last_publish_t = now
 
-        if self.debug_mode:
-            lateralPlan.solverCost = self.lat_mpc.cost
-            lateralPlan.solverState = log.LateralPlan.SolverState.new_message()
-            lateralPlan.solverState.x = self.x_sol.tolist()
+        try:
+            plan_solution_valid = self.solution_invalid_cnt < 1
+            plan_send = messaging.new_message('lateralPlan')
+            plan_send.valid = True
+            try:
+                plan_send.valid = sm.all_checks(service_list=['carState', 'controlsState', 'modelV2'])
+            except Exception:
+                pass
+            lateralPlan = plan_send.lateralPlan
+            try:
+                lateralPlan.modelMonoTime = sm.logMonoTime['modelV2']
+            except Exception:
+                lateralPlan.modelMonoTime = 0
 
-        lateralPlan.position.x = self.x_sol[:, 0].tolist()
-        lateralPlan.position.y = path_y.tolist()
-        lateralPlan.position.z = self.path_xyz[:, 2].tolist()
+            # update() 已把转向弧线并入 path_xyz（近场基线0.40 + 0.70 弧线权重），
+            # 此处若再混 0.35 弧线会把模型近场权重二次压到 ~20% → 右转贴不住，故不再二次混合。
+            path_y = self.path_xyz[:, 1].copy()
+            path_y = np.clip(path_y, GLOBAL_Y_MIN, GLOBAL_Y_MAX)
+            lateralPlan.dPathPoints = path_y.tolist()
+            try:
+                _tp = None
+                if (hasattr(self, 'turn_y_pts') and self.turn_y_pts is not None
+                        and len(self.turn_y_pts) == CONTROL_N):
+                    _tp = np.clip(self.turn_y_pts, GLOBAL_Y_MIN, GLOBAL_Y_MAX).tolist()
+                else:
+                    _tp = np.clip(path_y, GLOBAL_Y_MIN, GLOBAL_Y_MAX).tolist()
+                lateralPlan.turnPathPoints = _tp
+            except Exception:
+                pass
 
-        debugText = (
-            f"{'lanemode' if self.lanelines_active else 'laneless'} | "
-            f"obs={self.obs_closest_dist:.1f}m parked={self.has_roadside_parked} | "
-            f"blink={self.blinker_active} hold={self.avoidance_active} | "
-            f"merge_boost={self.merge_boost:.1f}km/h | "
-            f"offset={self.obs_smooth_offset:.2f}"
-        )
-        lateralPlan.latDebugText = debugText
-        pm.send('lateralPlan', plan_send)
+            try:
+                lateralPlan.psis = self.x_sol[0:CONTROL_N, 2].tolist()
+            except Exception:
+                lateralPlan.psis = [0.0] * CONTROL_N
+
+            if len(self.v_plan) == TRAJECTORY_SIZE:
+                try:
+                    lateralPlan.curvatures = (self.x_sol[0:CONTROL_N, 3] / self.v_plan[0:CONTROL_N]).tolist()
+                except Exception:
+                    lateralPlan.curvatures = [0.0] * CONTROL_N
+            else:
+                try:
+                    lateralPlan.curvatureRates = [
+                        float(x / max(self.v_ego, MIN_SPEED)) for x in self.lat_mpc.u_sol.flatten().tolist()
+                    ] + [0.0]
+                except Exception:
+                    lateralPlan.curvatureRates = [0.0] * (CONTROL_N + 1)
+
+            lateralPlan.mpcSolutionValid = bool(plan_solution_valid)
+            try:
+                lateralPlan.solverExecutionTime = self.lat_mpc.solve_time
+            except Exception:
+                lateralPlan.solverExecutionTime = 0.0
+
+            if self.debug_mode:
+                try:
+                    lateralPlan.solverCost = self.lat_mpc.cost
+                    lateralPlan.solverState = log.LateralPlan.SolverState.new_message()
+                    lateralPlan.solverState.x = self.x_sol.tolist()
+                except Exception:
+                    pass
+
+            try:
+                lateralPlan.position.x = self.x_sol[:, 0].tolist()
+                lateralPlan.position.y = path_y.tolist()
+                lateralPlan.position.z = self.path_xyz[:, 2].tolist()
+            except Exception:
+                pass
+
+            try:
+                _obs = int(min(self.obs_closest_dist, 99)) if self.obs_closest_dist < float("inf") else 0
+                _off = self.obs_smooth_offset
+                _prof_raw = np.max(np.abs(getattr(self, '_obs_profile_prev', np.zeros(TRAJECTORY_SIZE))))
+                _prof_max = float(_prof_raw)
+                _spd = int(self.v_ego * 3.6) if (self.curve_decel_active or self.v_ego > 0) else 0
+                _mode = "车道" if self.lanelines_active else "无车道"
+                _parked = "停" if self.has_roadside_parked else ""
+                _avoid = "避" if self.avoidance_active else ""
+                _curve = f"弯{int(self.curve_speed_limit)}" if self.curve_decel_active else ""
+                _left_pressure = "左压" if self.has_left_pressure else ""
+                _edge_tag = ""
+                if getattr(self, '_deviation_dir', 0) == -1:
+                    _edge_tag = "对向"
+                elif getattr(self, '_deviation_dir', 0) == 1:
+                    _edge_tag = "路肩"
+                elif getattr(self, '_edge_valid', False):
+                    _edge_tag = "路沿"
+                _prefix = ""
+                if abs(_off) > 0.05:
+                    _prefix += f"偏{_off:+.2f}"
+                if _prof_raw > 0.1:
+                    _prefix += f"|廓{_prof_max:.2f}"
+                if self.curve_decel_active:
+                    _prefix += f"|弯{_spd}"
+                lateralPlan.latDebugText = f"{_mode}{_prefix}|障{_obs}m{_parked}{_avoid}{_curve}{_left_pressure}{_edge_tag}"
+            except Exception:
+                lateralPlan.latDebugText = "lateral OK"
+
+            pm.send('lateralPlan', plan_send)
+        except Exception as e:
+            cloudlog.warning("publish exception: %s", str(e))
+            try:
+                plan_send = messaging.new_message('lateralPlan')
+                plan_send.valid = False
+                lateralPlan = plan_send.lateralPlan
+                lateralPlan.dPathPoints = [0.0] * CONTROL_N
+                lateralPlan.psis = [0.0] * CONTROL_N
+                lateralPlan.curvatures = [0.0] * CONTROL_N
+                lateralPlan.mpcSolutionValid = False
+                lateralPlan.latDebugText = "lateral err"
+                pm.send('lateralPlan', plan_send)
+            except Exception:
+                pass
+
+
+def main():
+    pass
+
+
+if __name__ == '__main__':
+    main()

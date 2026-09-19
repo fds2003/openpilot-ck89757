@@ -913,6 +913,7 @@ struct ControlsState @0x97ff69c53601abf1 {
   forceDecel @51 :Bool;
 
   activeLaneLine @67 : Bool;
+  liveSR @68 :Float32;
 
   lateralControlState :union {
     pidState @53 :LateralPIDState;
@@ -1402,7 +1403,8 @@ struct LateralPlan @0xe1e9318e2ae8b51e {
   latDebugText @34 :Text;
 
   position @35 :XYZTData;
-  distances @36 :List(Float32);
+  turnPathPoints @36 :List(Float32);
+
 
   struct SolverState {
     x @0 :List(List(Float32));

@@ -1,5 +1,6 @@
 #include "selfdrive/ui/qt/onroad/model.h"
-
+ModelRenderer::ModelRenderer() {
+}
 constexpr int CLIP_MARGIN = 500;
 constexpr float MIN_DRAW_DISTANCE = 10.0;
 constexpr float MAX_DRAW_DISTANCE = 100.0;
@@ -28,7 +29,12 @@ void ModelRenderer::draw(QPainter &painter, const QRect &surface_rect) {
   longitudinal_control = sm["carParams"].getCarParams().getOpenpilotLongitudinalControl();
   path_offset_z = sm["liveCalibration"].getLiveCalibration().getHeight()[0];
 
-  return;
+  // [DP] 彩虹模式：QPainter 管线完全让位给 carrot.cc (nanovg)
+  //      杜绝双后端同时画 → 花屏 / 双线 / 无色块渐变
+  if (s->scene.dp_ui_rainbow) {
+    return;  // ← 关键：QPainter 不画任何像素，全部由 carrot.cc 的 drawRainbowPath 负责
+  }
+
   painter.save();
 
   const auto &model = sm["modelV2"].getModelV2();
@@ -99,7 +105,6 @@ void ModelRenderer::drawLaneLines(QPainter &painter) {
     painter.setBrush(QColor::fromRgbF(1.0, 1.0, 1.0, std::clamp<float>(lane_line_probs[i], 0.0, 0.7)));
     painter.drawPolygon(lane_line_vertices[i]);
   }
-
   // road edges
   for (int i = 0; i < std::size(road_edge_vertices); ++i) {
     painter.setBrush(QColor::fromRgbF(1.0, 0, 0, std::clamp<float>(1.0 - road_edge_stds[i], 0.0, 1.0)));
@@ -109,11 +114,11 @@ void ModelRenderer::drawLaneLines(QPainter &painter) {
 
 void ModelRenderer::drawPath(QPainter &painter, const cereal::ModelDataV2::Reader &model, int height) {
   QLinearGradient bg(0, height, 0, 0);
+
   if (experimental_mode) {
     // The first half of track_vertices are the points for the right side of the path
     const auto &acceleration = model.getAcceleration().getX();
     const int max_len = std::min<int>(track_vertices.length() / 2, acceleration.size());
-
     for (int i = 0; i < max_len; ++i) {
       // Some points are out of frame
       int track_idx = max_len - i - 1;  // flip idx to start from bottom right
@@ -135,7 +140,6 @@ void ModelRenderer::drawPath(QPainter &painter, const cereal::ModelDataV2::Reade
       // Skip a point, unless next is last
       i += (i + 2) < max_len ? 1 : 0;
     }
-
   } else {
     updatePathGradient(bg);
   }
@@ -146,14 +150,13 @@ void ModelRenderer::drawPath(QPainter &painter, const cereal::ModelDataV2::Reade
 
 void ModelRenderer::updatePathGradient(QLinearGradient &bg) {
   static const QColor throttle_colors[] = {
-      QColor::fromHslF(148. / 360., 0.94, 0.51, 0.4),
-      QColor::fromHslF(112. / 360., 1.0, 0.68, 0.35),
-      QColor::fromHslF(112. / 360., 1.0, 0.68, 0.0)};
-
+    QColor::fromHslF(148. / 360., 0.94, 0.51, 0.4),
+    QColor::fromHslF(112. / 360., 1.0, 0.68, 0.35),
+    QColor::fromHslF(112. / 360., 1.0, 0.68, 0.0)};
   static const QColor no_throttle_colors[] = {
-      QColor::fromHslF(148. / 360., 0.0, 0.95, 0.4),
-      QColor::fromHslF(112. / 360., 0.0, 0.95, 0.35),
-      QColor::fromHslF(112. / 360., 0.0, 0.95, 0.0),
+    QColor::fromHslF(148. / 360., 0.0, 0.95, 0.4),
+    QColor::fromHslF(112. / 360., 0.0, 0.95, 0.35),
+    QColor::fromHslF(112. / 360., 0.0, 0.95, 0.0),
   };
 
   // Transition speed; 0.1 corresponds to 0.5 seconds at UI_FREQ
@@ -182,10 +185,10 @@ void ModelRenderer::updatePathGradient(QLinearGradient &bg) {
 QColor ModelRenderer::blendColors(const QColor &start, const QColor &end, float t) {
   if (t == 1.0f) return end;
   return QColor::fromRgbF(
-      (1 - t) * start.redF() + t * end.redF(),
-      (1 - t) * start.greenF() + t * end.greenF(),
-      (1 - t) * start.blueF() + t * end.blueF(),
-      (1 - t) * start.alphaF() + t * end.alphaF());
+    (1 - t) * start.redF() + t * end.redF(),
+    (1 - t) * start.greenF() + t * end.greenF(),
+    (1 - t) * start.blueF() + t * end.blueF(),
+    (1 - t) * start.alphaF() + t * end.alphaF());
 }
 
 void ModelRenderer::drawLead(QPainter &painter, const cereal::RadarState::LeadData::Reader &lead_data,

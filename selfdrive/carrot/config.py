@@ -121,11 +121,11 @@ class UnifiedParams:
         """获取默认的自定义参数数据"""
         return {
             "AutoTurnDistOffset": 0,
-            "AutoForkDistOffset": 40,
+            "AutoForkDistOffset": 30,
             "AutoDoForkBlinkerDist": 15,
             "AutoDoForkNavDist": 15,
-            "AutoForkDistOffsetH": 3000,
-            "AutoDoForkDecalDistH": 50,
+            "AutoForkDistOffsetH": 2000,
+            "AutoDoForkDecalDistH": 80,
             "AutoDoForkDecalDist": 20,
             "AutoDoForkBlinkerDistH": 30,
             "AutoDoForkNavDistH": 50,
@@ -158,10 +158,10 @@ class UnifiedParams:
             "SideRadarMinDist": 0,
 
             "LidarBsdDelayTime": 10,
-            "LidarFrontVDistTime": 10,
-            "LidarFrontVRelDistTime": 30,
-            "LidarBehindVDistTime": 10,
-            "LidarBehindVRelDistTime": 30,
+            "LidarFrontVDistTime": -50,
+            "LidarFrontVRelDistTime": 40,
+            "LidarBehindVDistTime": -100,
+            "LidarBehindVRelDistTime": 40,
             "LaneLineDelayTime": 10,
 
             "AutoTurnInNotRoadEdge": 1,
@@ -169,11 +169,13 @@ class UnifiedParams:
             "ContinuousLaneChangeCnt": 4,
             "ContinuousLaneChangeInterval": 2,
             "AutoTurnLeft": 1,
-            "AutoEnTurnNewLaneTimeH": 0,
-            "AutoEnTurnNewLaneTime": 0,
+            "AutoEnTurnNewLaneTimeH": 30,
+            "AutoEnTurnNewLaneTime": 30,
             "NewLaneWidthDiff": 8,
             "DynamicExperimentalSpeed": -5,
             "DynamicExperimentalLatA": 0,
+            "AtcResumeDelay": 3,
+            "AtcResumeCnt": 5,
         }
 
     def get_bool(self, key, default=False):

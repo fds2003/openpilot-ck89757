@@ -149,6 +149,14 @@
         <source>选择您的车辆</source>
         <translation type="unfinished"></translation>
     </message>
+    <message>
+        <source>🌈 彩虹轨迹</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>开启后轨迹条显示为彩虹渐变色彩，关闭则显示原版绿/黄/红/橙单色</source>
+        <translation type="unfinished"></translation>
+    </message>
 </context>
 <context>
     <name>ConfirmationDialog</name>

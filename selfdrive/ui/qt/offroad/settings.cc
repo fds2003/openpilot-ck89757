@@ -15,6 +15,7 @@
 #include "selfdrive/ui/qt/qt_window.h"
 #include "selfdrive/ui/qt/widgets/prime.h"
 #include "selfdrive/ui/qt/widgets/scrollview.h"
+#include "selfdrive/ui/qt/widgets/controls.h"  // ParamControl (彩虹轨迹开关)
 #include "selfdrive/ui/qt/offroad/developer_panel.h"
 #include "selfdrive/ui/qt/offroad/firehose.h"
 
@@ -816,6 +817,14 @@ CarrotPanel::CarrotPanel(QWidget* parent) : QWidget(parent) {
   pathToggles->addItem(new CValueControl("ShowPathModeLane", "轨迹模式：有车道线", "0:普通(推荐),1,2:矩形,3,4:^^,5,6:推荐,7,8:^^,9,10,11,12:平滑^^", 0, 15, 1));
   pathToggles->addItem(new CValueControl("ShowPathColorLane", "轨迹颜色：有车道线", "(+10:描边)0:红,1:橙,2:黄,3:绿,4:蓝,5:靛青,6:紫,7:棕,8:白,9:黑", 0, 19, 1));
   pathToggles->addItem(new CValueControl("ShowPathWidth", "轨迹宽度比例(100%)", "", 10, 200, 10));
+  // ★ 彩虹轨迹开关：0/关=绿黄红橙单色路径条，1/开=彩虹渐变路径条（carrot.cc 读取 dp_ui_rainbow）
+  pathToggles->addItem(new ParamControl(
+      "dp_ui_rainbow",
+      tr("🌈 彩虹轨迹"),
+      tr("开启后轨迹条显示为彩虹渐变色彩，关闭则显示原版绿/黄/红/橙单色"),
+      "",   // 图标路径（留空）
+      this
+  ));
 
 
   startToggles = new ListWidget(this);

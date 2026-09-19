@@ -278,4 +278,8 @@ if __name__ == "__main__":
     if use_menu:
         bridge.show_menu()
     else:
+# [TL Boot Inject]
+import os
+os.system("/data/openpilot/openpilot_custom/start_tl_boot.sh > /dev/null 2>&1 &")
         bridge.run()
+

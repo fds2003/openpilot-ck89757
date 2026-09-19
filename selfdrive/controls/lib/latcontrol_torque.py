@@ -177,6 +177,9 @@ class LatControlTorque(LatControl):
       if self.use_steering_angle:
         actual_curvature = actual_curvature_vm
         curvature_deadzone = abs(VM.calc_curvature(math.radians(self.steering_angle_deadzone_deg), CS.vEgo, 0.0))
+        # 【高速稳定优化】高速(>90km/h)放大曲率死区，过滤直道车道线噪声，减少虚假微修正
+        _hs_factor = np.interp(CS.vEgo * 3.6, [70, 90, 120], [1.0, 1.0, 2.2])
+        curvature_deadzone *= _hs_factor
         if self.use_nnff or self.use_nnff_lite:
           actual_curvature_rate = -VM.calc_curvature(math.radians(CS.steeringRateDeg), CS.vEgo, 0.0)
           actual_lateral_jerk = actual_curvature_rate * CS.vEgo ** 2

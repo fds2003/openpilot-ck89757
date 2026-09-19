@@ -72,6 +72,14 @@ typedef struct UIScene {
 
   bool carrot_experimental_mode = false;
 
+  // ==== [DP] 彩虹路径 ====
+  bool dp_ui_rainbow = false;
+  float dp_rainbow_alpha = 180.0f;
+  float dp_rainbow_path_width = 1.5f;
+  float dp_rainbow_scroll_speed = 4.0f;
+  int dp_rainbow_num_repeats = 3;
+  // ======================
+
 } UIScene;
 
 class UIState : public QObject {

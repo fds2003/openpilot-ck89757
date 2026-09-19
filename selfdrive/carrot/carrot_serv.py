@@ -212,6 +212,15 @@ class CarrotServ:
     self.atc_activate_count = 0
     self.gas_override_speed = 0
     self.gas_pressed_state = False
+    # 盲区滤波+滞回（不依赖MyMovingAverage，不崩）
+    self.left_bsd_window = []
+    self.right_bsd_window = []
+    self.blind_hysteresis_time = 0.3
+    self.left_bsd_debounce = 0.0
+    self.right_bsd_debounce = 0.0
+    self.left_blind_time_remain = 0.0
+    self.right_blind_time_remain = 0.0
+
     self.source_last = "none"
 
     self.debugText = ""
@@ -293,6 +302,8 @@ class CarrotServ:
     self.atcType = "none"
 
     self.update_params()
+    global _CARROT_SERV_INSTANCE
+    _CARROT_SERV_INSTANCE = self
 
   def update_params(self):
     if (self.param_frame % 10) == 0:
@@ -428,6 +439,23 @@ class CarrotServ:
       #print("TrafficLight none")
 
     self.traffic_light_q.append((x,y,color,cnf))
+
+  # ===== 打灯请求接口（blinker patch）=====
+  def set_blinker_request(self, direction):
+    """OP 主动请求打灯（供 lateral_planner 调用）。direction: 1=左 2=右 0=关"""
+    if direction == BLINKER_LEFT:
+      self.ext_blinker = BLINKER_LEFT; self.ext_state = 1
+    elif direction == BLINKER_RIGHT:
+      self.ext_blinker = BLINKER_RIGHT; self.ext_state = 1
+    elif direction == BLINKER_NONE:
+      self.ext_blinker = BLINKER_NONE; self.ext_state = 0
+
+  def tick_blinker(self, dt=0.1):
+    """单次触发约0.7s后自动回 BLINKER_NONE，避免常亮"""
+    if self.ext_state == 1:
+      self._blinker_hold = getattr(self, "_blinker_hold", 0.0) + dt
+      if self._blinker_hold >= 0.7:
+        self.ext_blinker = BLINKER_NONE; self.ext_state = 0; self._blinker_hold = 0.0
 
 
   def calculate_current_speed(self, left_dist, safe_speed_kph, safe_time, safe_decel_rate):
@@ -992,15 +1020,58 @@ class CarrotServ:
         self.fork_speed_keep_time = -1
         self.atc_speed_decal = 0
 
-    # ==========================================================
-    # 盲区受阻标志
-    atc_left_bsd = True if (meta.atcBsd == 1) else False
-    atc_right_bsd = True if (meta.atcBsd == 2) else False
+   
+    # 盲区受阻标志（安全滤波+滞回版，不依赖MyMovingAverage，不写capnp新字段）
+    meta_atc_bsd = getattr(meta, 'atcBsd', 0)
+
+    atc_left_bsd_raw = (meta_atc_bsd == 1)
+    atc_right_bsd_raw = (meta_atc_bsd == 2)
+    driver_left_bsd_raw = (meta_atc_bsd == 4)
+    driver_right_bsd_raw = (meta_atc_bsd == 5)
+
+    # 3帧滑动多数表决
+    self.left_bsd_window.append(1 if (atc_left_bsd_raw or driver_left_bsd_raw) else 0)
+    self.right_bsd_window.append(1 if (atc_right_bsd_raw or driver_right_bsd_raw) else 0)
+    if len(self.left_bsd_window) > 3:
+        self.left_bsd_window.pop(0)
+    if len(self.right_bsd_window) > 3:
+        self.right_bsd_window.pop(0)
+    atc_left_bsd_f = (sum(self.left_bsd_window) >= 2)
+    atc_right_bsd_f = (sum(self.right_bsd_window) >= 2)
+
+    v_ego_kph_local = v_ego * 3.6
+    dyn_protect = float(np.clip(v_ego_kph_local / 30.0, 3.0, 6.0))
+
+    # 左盲区滞回
+    if atc_left_bsd_f:
+        self.left_bsd_debounce = self.blind_hysteresis_time
+    elif self.left_bsd_debounce > 0:
+        self.left_bsd_debounce -= DT_NAV
+        atc_left_bsd_f = True
+    if atc_left_bsd_f:
+        self.left_blind_time_remain = max(self.left_blind_time_remain, dyn_protect)
+    elif self.left_blind_time_remain > 0:
+        self.left_blind_time_remain -= DT_NAV
+
+    # 右盲区滞回
+    if atc_right_bsd_f:
+        self.right_bsd_debounce = self.blind_hysteresis_time
+    elif self.right_bsd_debounce > 0:
+        self.right_bsd_debounce -= DT_NAV
+        atc_right_bsd_f = True
+    if atc_right_bsd_f:
+        self.right_blind_time_remain = max(self.right_blind_time_remain, dyn_protect)
+    elif self.right_blind_time_remain > 0:
+        self.right_blind_time_remain -= DT_NAV
+
+    atc_left_bsd = atc_left_bsd_f
+    atc_right_bsd = atc_right_bsd_f
     atc_left_right_bsd = atc_left_bsd or atc_right_bsd
 
-    driver_left_bsd = True if (meta.atcBsd == 4) else False
-    driver_right_bsd = True if (meta.atcBsd == 5) else False
+    driver_left_bsd = driver_left_bsd_raw
+    driver_right_bsd = driver_right_bsd_raw
     driver_left_right_bsd = driver_left_bsd or driver_right_bsd
+
 
     if check_steer and ((atc_bsd_adjust_enable and atc_left_right_bsd) or (not atc_bsd_adjust_enable and not atc_control and driver_left_right_bsd)):  # 允许自动加减速
       if self.lidar_rvalid and self.lidar_lvalid:  #有激光雷达
@@ -1295,9 +1366,13 @@ class CarrotServ:
     if self.active_carrot <= 1 or self.active_kisa_count > 0:
       self.update_nav_instruction(sm)
 
-    if self.xSpdType < 0 or (self.xSpdType not in [100,101] and self.xSpdDist <= 0) or (self.xSpdType in [100,101] and self.xSpdDist < -250):
-      self.xSpdType = -1
-      self.xSpdDist = self.xSpdLimit = 0
+        # 绿灯时立刻清摄像头限速，避免绿灯拖刹
+    if self.traffic_state == 2 and self.xSpdType in [100, 101]:
+        self.xSpdType = -1
+        self.xSpdDist = self.xSpdLimit = 0
+    elif self.xSpdType < 0 or (self.xSpdType not in [100,101] and self.xSpdDist <= 0) or (self.xSpdType in [100,101] and self.xSpdDist < -30):
+        self.xSpdType = -1
+        self.xSpdDist = self.xSpdLimit = 0
     if self.xTurnInfo < 0 or self.xDistToTurn < -50:
       if self.xDistToTurn > 0:
         self.xDistToTurn = 0
@@ -1307,6 +1382,11 @@ class CarrotServ:
 
     sdi_speed = 250
     hda_active = False
+    # 远处事件过滤：150m 外的摄像头/事件不触发减速（减速带和区间测速除外）
+    if self.xSpdDist > 150 and self.xSpdType not in [22, 4]:
+        self.xSpdType = -1
+        self.xSpdDist = self.xSpdLimit = 0
+
     ### 超速摄影机和减速带减速处理
     if (self.xSpdDist > 0 or self.xSpdType in [100, 101]) and self.active_carrot > 0:
       safe_sec = self.autoNaviSpeedBumpTime if self.xSpdType == 22 else self.autoNaviSpeedCtrlEnd
@@ -1328,7 +1408,19 @@ class CarrotServ:
     #print(f"sdi_speed: {sdi_speed}, hda_active: {hda_active}, xSpdType: {self.xSpdType}, xSpdDist: {self.xSpdDist}, active_carrot: {self.active_carrot}, v_ego_kph: {v_ego_kph}, nRoadLimitSpeed: {self.nRoadLimitSpeed}")
     ### TBT速度控制 self.atcSpeed, self.atcDist这两个变量均未用上
     atc_desired, self.atcType, self.atcSpeed, self.atcDist, atc_speed_up = self.update_auto_turn(v_ego*3.6, sm, self.xTurnInfo, self.xDistToTurn, True)
-    atc_desired_next, _, _, _, _ = self.update_auto_turn(v_ego*3.6, sm, self.xTurnInfoNext, self.xDistToTurnNext, False)
+    # 绿灯直行时，忽略转弯减速误判
+    if self.traffic_state == 2 and self.xTurnInfo in [1, 2]:
+        atc_desired = 250
+        atc_desired_next = 250
+        atc_speed_up = 0
+
+
+    if self.xDistToTurnNext > 0 and self.xDistToTurnNext < 120:
+        atc_desired_next, _, _, _, _ = self.update_auto_turn(v_ego*3.6, sm, self.xTurnInfoNext, self.xDistToTurnNext, False)
+    else:
+        atc_desired_next = 250
+
+
 
     if self.nSdiType  >= 0: # or self.active_carrot > 0:
       pass
@@ -1366,24 +1458,55 @@ class CarrotServ:
       and self.autoSpeedUptoRoadSpeedLimit > 0 and not cs_speed_limit):          # 未设置巡航速度跟随道路限速/无车辆自带限速时，把巡航速度作为道路限速
       self.nRoadLimitSpeed = v_cruise_kph
 
-    speed_n_sources = [
-      (atc_desired, "atc"),
-      (atc_desired_next, "atc2"),
-      (sdi_speed, "hda" if hda_active else "bump" if self.xSpdType == 22 else "section" if self.xSpdType == 4 else "police" if self.xSpdType == 100 else "waze" if self.xSpdType == 101 else "cam"),
-      (limit_speed, "road"),
-    ]
-    if self.turnSpeedControlMode in [1,2]: #模式1和2均有视觉转弯控速,autoCurveSpeedLowerLimit为用户设置的最小转弯速度，vturn_speed这视觉计算的限速
-      speed_n_sources.append((max(abs(vturn_speed), self.autoCurveSpeedLowerLimit), "vturn"))
+        # 高速直行无事件：只信 limit_speed，屏蔽所有辅助源下拉
+    is_highway = (self.roadcate <= 1)
+    is_straight = (self.xTurnInfo not in [1, 2, 3, 4, 5, 7])
+    no_event = (self.xSpdType < 0) and (self.traffic_state != 1)
+    is_fast = v_ego_kph >= 90
+    pure_highway_cruise = is_highway and is_straight and no_event and is_fast
 
-    route_speed = max(route_speed * self.mapTurnSpeedFactor, self.autoCurveSpeedLowerLimit)
-    if self.turnSpeedControlMode == 2:
-      if -500 < self.xDistToTurn < 500:
+    if pure_highway_cruise:
+      speed_n_sources = [
+        (limit_speed, "road"),
+      ]
+    else:
+      speed_n_sources = [
+        (atc_desired, "atc"),
+        (atc_desired_next, "atc2"),
+        (sdi_speed, "hda" if hda_active else "bump" if self.xSpdType == 22 else "section" if self.xSpdType == 4 else "police" if self.xSpdType == 100 else "waze" if self.xSpdType == 101 else "cam"),
+        (limit_speed, "road"),
+      ]
+
+    if not pure_highway_cruise:
+      if self.turnSpeedControlMode in [1,2]:
+        speed_n_sources.append((max(abs(vturn_speed), self.autoCurveSpeedLowerLimit), "vturn"))
+
+      route_speed = max(route_speed * self.mapTurnSpeedFactor, self.autoCurveSpeedLowerLimit)
+      if self.turnSpeedControlMode == 2:
+        if -500 < self.xDistToTurn < 500:
+          speed_n_sources.append((route_speed, "route"))
+      elif self.turnSpeedControlMode == 3:
         speed_n_sources.append((route_speed, "route"))
-    elif self.turnSpeedControlMode == 3:
-      speed_n_sources.append((route_speed, "route"))
-      #speed_n_sources.append((self.calculate_current_speed(dist, speed * self.mapTurnSpeedFactor, 0, 1.2), "route"))
+
 
     desired_speed, source = min(speed_n_sources, key=lambda x: x[0])
+    # 绿灯时，desired_speed 不低于当前车速的 90%，防止点刹
+    if self.traffic_state == 2:
+        _min_keep = int(v_ego_kph * 0.9)
+        if desired_speed < _min_keep and v_ego_kph > 10:
+            desired_speed = _min_keep
+            source = "green_keep"
+    # 高速平滑兜底：每0.1s最多降2km/h，彻底杜绝瞬间点刹
+    if not hasattr(self, '_last_desired_speed'):
+        self._last_desired_speed = desired_speed
+    if v_ego_kph >= 90:
+        _max_drop = 2  # 高速每0.1s最多降2km/h（舒适减速的4倍缓冲）
+        if desired_speed < self._last_desired_speed - _max_drop:
+            desired_speed = self._last_desired_speed - _max_drop
+            source = "smooth"
+    self._last_desired_speed = desired_speed
+
+
 
     if CS is not None:
       if source != self.source_last:
@@ -1467,7 +1590,17 @@ class CarrotServ:
     msg.carrotMan.carrotCmdIndex = int(self.carrotCmdIndex)
     msg.carrotMan.carrotCmd = self.carrotCmd
     msg.carrotMan.carrotArg = self.carrotArg
-    msg.carrotMan.trafficState = self.traffic_state
+    # 60m 内绿灯已确认则不接受红灯翻转，防止近距离误检急刹
+    if self.xDistToTurn > 0 and self.xDistToTurn < 60 and self.traffic_state == 1:
+        recent_green = any(c == "Green Light" or c == "Left turn" for _, _, c, _ in list(self.traffic_light_q)[-15:])
+        if recent_green:
+            msg.carrotMan.trafficState = 0
+        else:
+            msg.carrotMan.trafficState = self.traffic_state
+    else:
+        msg.carrotMan.trafficState = self.traffic_state
+
+
 
     #new
     msg.carrotMan.xDistToTurnNav = int(self.xDistToTurnNav)
@@ -1728,3 +1861,9 @@ class CarrotServ:
         self.nPosSpeed = float(json.get("gps_speed", 0))
         print(f"phone gps: {self.vpPosPointLatNavi}, {self.vpPosPointLonNavi}, {self.gps_accuracy_phone}, {self.nPosSpeed}")
 
+
+
+# ===== 单例访问器（blinker patch）=====
+_CARROT_SERV_INSTANCE = None
+def get_carrot_serv_instance():
+  return _CARROT_SERV_INSTANCE

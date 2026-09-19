@@ -30,10 +30,13 @@ def main():
   while True:
     sm.update()
     if sm.updated['modelV2']:
+      # ① 横向先 update：刷新 lateral_planner.available_road_width（safe_right - safe_left）
       lateral_planner.update(sm, carrot)
-      lateral_planner.publish(sm, pm, carrot)
-      longitudinal_planner.update(sm, carrot)
+      # ② 纵向后 update：读取同一帧的 available_road_width，第⑤重"可用路宽"生效
+      longitudinal_planner.update(sm, carrot, lateral_planner=lateral_planner)
+
       longitudinal_planner.publish(sm, pm, carrot)
+      lateral_planner.publish(sm, pm, carrot)
 
       ldw.update(sm.frame, sm['modelV2'], sm['carState'], sm['carControl'])
       msg = messaging.new_message('driverAssistance')
