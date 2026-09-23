@@ -81,6 +81,11 @@ selfdrive/modeld/models/*.pkl
 
 build/
 
+# prebuilt 是"scons 编译已完成"的标记，必须与编译产物同时入库。
+# 只提交该标记而不提交二进制会导致设备跳过编译、启动即崩。
+# release/build_*.sh 用 `git add -f` 强制加入，不受此规则影响。
+prebuilt
+
 !**/.gitkeep
 
 poetry.toml
