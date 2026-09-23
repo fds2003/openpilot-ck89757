@@ -86,6 +86,11 @@ build/
 # release/build_*.sh 用 `git add -f` 强制加入，不受此规则影响。
 prebuilt
 
+# 由 scripts/make_installer.py 从 installer_elf 生成的安装器，
+# 属构建产物，不入库（installer_elf 底包需保留）。
+/installer
+/installer_lan
+
 !**/.gitkeep
 
 poetry.toml
