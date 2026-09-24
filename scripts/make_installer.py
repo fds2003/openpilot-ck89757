@@ -17,9 +17,15 @@ BRANCH_CHUNK_LEN = 73
 
 def make_installer(base_elf_path, git_url, branch, output_path):
     if not os.path.exists(base_elf_path):
-        print(f"[错误] 基础 ELF 文件不存在: {base_elf_path}")
-        print("请确保同目录下存在官方基线包 installer_elf")
-        sys.exit(1)
+        # 尝试在脚本所在目录的上一级（仓库根目录）寻找
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        alt_path = os.path.join(script_dir, "..", base_elf_path)
+        if os.path.exists(alt_path):
+            base_elf_path = alt_path
+        else:
+            print(f"[错误] 基础 ELF 文件不存在: {base_elf_path}")
+            print("请确保同目录下存在官方基线包 installer_elf")
+            sys.exit(1)
 
     with open(base_elf_path, "rb") as f:
         data = bytearray(f.read())
@@ -78,8 +84,8 @@ def make_installer(base_elf_path, git_url, branch, output_path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="制作 Comma 3 自定义安装器 ELF 文件")
     parser.add_argument("--base", default="installer_elf", help="底包 ELF 文件路径 (默认: installer_elf)")
-    parser.add_argument("--url", required=True, help="自定义 Git 仓库完整地址 (如 http://git.utoohotel.com/ck89757/openpilot.git)")
-    parser.add_argument("--branch", required=True, help="目标分支名 (如 cpv9-dev)")
+    parser.add_argument("--url", default="http://git.utoohotel.com/ck89757/openpilot.git", help="自定义 Git 仓库完整地址 (默认: http://git.utoohotel.com/ck89757/openpilot.git)")
+    parser.add_argument("--branch", default="cpv9-custo", help="目标分支名 (默认: cpv9-custo)")
     parser.add_argument("--output", "-o", default="installer", help="输出文件名 (默认: installer)")
 
     args = parser.parse_args()
