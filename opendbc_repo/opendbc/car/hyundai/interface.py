@@ -238,6 +238,13 @@ class CarInterface(CarInterfaceBase):
 
     # Car specific configuration overrides
 
+    if candidate == CAR.HYUNDAI_CUSTIN_1ST_GEN:
+      ret.startAccel = 1.0  # 库斯途 8AT 起步平顺防蹿车
+      ret.stopAccel = -1.0  # 库斯途燃油版平顺刹停，避免红灯前停死瞬间点头
+      ret.stoppingControl = True
+      ret.vEgoStarting = 0.1
+      ret.steerActuatorDelay = 0.12  # 库斯途大轴距横向执行器延迟精细匹配
+
     if candidate == CAR.KIA_OPTIMA_G4_FL:
       ret.steerActuatorDelay = 0.2
 

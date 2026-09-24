@@ -104,8 +104,8 @@ function launch {
 
   # start manager
   cd system/manager
-  if [ ! -f $DIR/prebuilt ]; then
-    ./build.py
+  if [ ! -f "$DIR/prebuilt" ]; then
+    ./build.py && touch "$DIR/prebuilt"
   fi
   ./manager.py
 

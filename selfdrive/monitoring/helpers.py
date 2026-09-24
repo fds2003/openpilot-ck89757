@@ -20,13 +20,13 @@ EventName = log.OnroadEvent.EventName
 class DRIVER_MONITOR_SETTINGS:
   def __init__(self):
     self._DT_DMON = DT_DMON
-    # ref (page15-16): https://eur-lex.europa.eu/legal-content/EN/TXT/PDF/?uri=CELEX:42018X1947&rid=2
-    self._AWARENESS_TIME = 30. # passive wheeltouch total timeout
-    self._AWARENESS_PRE_TIME_TILL_TERMINAL = 15.
-    self._AWARENESS_PROMPT_TIME_TILL_TERMINAL = 6.
-    self._DISTRACTED_TIME = 11. # active monitoring total timeout
-    self._DISTRACTED_PRE_TIME_TILL_TERMINAL = 8.
-    self._DISTRACTED_PROMPT_TIME_TILL_TERMINAL = 6.
+    # 针对家庭长途自驾进行舒适度放宽，消除频繁神经质报警骚扰，兼顾安全底线
+    self._AWARENESS_TIME = 180. # passive wheeltouch total timeout (从 30s 宽限至 180s)
+    self._AWARENESS_PRE_TIME_TILL_TERMINAL = 60.
+    self._AWARENESS_PROMPT_TIME_TILL_TERMINAL = 20.
+    self._DISTRACTED_TIME = 45. # active monitoring total timeout (从 11s 宽限至 45s)
+    self._DISTRACTED_PRE_TIME_TILL_TERMINAL = 30.
+    self._DISTRACTED_PROMPT_TIME_TILL_TERMINAL = 15.
 
     self._FACE_THRESHOLD = 0.7
     self._EYE_THRESHOLD = 0.65

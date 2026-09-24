@@ -418,6 +418,19 @@ class CarState(CarStateBase):
     if prev_main_buttons == 0 and self.main_buttons[-1] != 0:
       self.main_enabled = not self.main_enabled
 
+    # ===== 回灌 carrot_serv 打灯请求为虚拟 blinker（blinker patch）=====
+    # 结合盲区监测（BSD），支持高德导航联动自动变道（ATC）与车道切换
+    try:
+      from openpilot.selfdrive.carrot.carrot_serv import get_carrot_serv_instance
+      _cs = get_carrot_serv_instance()
+      if _cs is not None and _cs.ext_blinker in (1, 2):
+        if _cs.ext_blinker == 1:
+          ret.leftBlinker = True
+        else:
+          ret.rightBlinker = True
+    except Exception:
+      pass
+
     return ret
 
   def update_speed_limit(self, ret, speed_limit_cam):

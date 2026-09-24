@@ -20,6 +20,16 @@ MAX_ANGLE = 85
 MAX_ANGLE_FRAMES = 89
 MAX_ANGLE_CONSECUTIVE_FRAMES = 2
 
+# ====================== 库斯途 / 现代分速阶梯转向策略 ======================
+CUSTIN_LOW_SPEED_MAX = 30.0 * CV.KPH_TO_MS   # 低速段上界 (30 km/h)
+CUSTIN_LOW_GAIN = 1.12                       # 低速扭矩增益（低速掉头/窄弯打得动）
+CUSTIN_LOW_ANGLE_BOOST = 1.15                # 低速角度放大倍数（提升大轴距响应）
+CUSTIN_HIGH_SPEED_MIN = 60.0 * CV.KPH_TO_MS  # 高速段下界 (60 km/h)
+CUSTIN_HIGH_GAIN = 1.00                      # 高速扭矩增益（原厂稳定）
+CUSTIN_HIGH_ANGLE_BOOST = 1.00               # 高速角度放大倍数（收敛防晃）
+CUSTIN_MAX_STEER_GAIN = 1.25                 # 硬上限兜底
+# =========================================================================
+
 vibrate_intervals = [
   (0.0, 0.5),
   (1.0, 1.5),
@@ -157,8 +167,34 @@ class CarController(CarControllerBase):
 
     angle_control = self.CP.flags & HyundaiFlags.ANGLE_CONTROL
 
+    # ====================== 库斯途转向阶梯策略计算 ======================
+    v = CS.out.vEgo
+    is_custin = self.car_fingerprint == CAR.HYUNDAI_CUSTIN_1ST_GEN
+
+    if is_custin:
+      if v <= CUSTIN_LOW_SPEED_MAX:
+        steer_scale = CUSTIN_LOW_GAIN
+        angle_boost = CUSTIN_LOW_ANGLE_BOOST
+      elif v >= CUSTIN_HIGH_SPEED_MIN:
+        steer_scale = CUSTIN_HIGH_GAIN
+        angle_boost = CUSTIN_HIGH_ANGLE_BOOST
+      else:
+        ratio = (v - CUSTIN_LOW_SPEED_MAX) / (CUSTIN_HIGH_SPEED_MIN - CUSTIN_LOW_SPEED_MAX)
+        steer_scale = CUSTIN_LOW_GAIN + ratio * (CUSTIN_HIGH_GAIN - CUSTIN_LOW_GAIN)
+        angle_boost = CUSTIN_LOW_ANGLE_BOOST + ratio * (CUSTIN_HIGH_ANGLE_BOOST - CUSTIN_LOW_ANGLE_BOOST)
+      steer_scale = min(steer_scale, CUSTIN_MAX_STEER_GAIN)
+
+      steer_desired_deg = actuators.steeringAngleDeg * angle_boost
+      # 角度误差保护：高速若期望角度与实际角度差距过大，适度抑制增益防打架
+      angle_err = abs(steer_desired_deg - CS.out.steeringAngleDeg)
+      if v > CUSTIN_LOW_SPEED_MAX and angle_err > 12.0:
+        steer_scale = max(1.0, steer_scale * 0.97)
+    else:
+      steer_scale = 1.0
+      steer_desired_deg = actuators.steeringAngleDeg
+
     # steering torque
-    new_torque = int(round(actuators.torque * self.params.STEER_MAX))
+    new_torque = int(round(actuators.torque * self.params.STEER_MAX * steer_scale))
     apply_torque = apply_driver_steer_torque_limits(new_torque, self.apply_torque_last, CS.out.steeringTorque, self.params)
 
     # >90 degree steering fault prevention
@@ -166,7 +202,7 @@ class CarController(CarControllerBase):
                                                                        self.angle_limit_counter, self.max_angle_frames,
                                                                        MAX_ANGLE_CONSECUTIVE_FRAMES)
 
-    apply_angle = apply_std_steer_angle_limits(actuators.steeringAngleDeg, self.apply_angle_last, CS.out.vEgoRaw,
+    apply_angle = apply_std_steer_angle_limits(steer_desired_deg, self.apply_angle_last, CS.out.vEgoRaw,
                                                CS.out.steeringAngleDeg, CC.latActive, self.params.ANGLE_LIMITS)
 
     if abs(apply_angle - self.apply_angle_last) > 0.1:
