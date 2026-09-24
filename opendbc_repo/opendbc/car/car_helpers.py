@@ -87,8 +87,8 @@ def can_fingerprint(can_recv: CanRecvCallable) -> tuple[str | None, dict[int, di
 def fingerprint(can_recv: CanRecvCallable, can_send: CanSendCallable, set_obd_multiplexing: ObdCallback, num_pandas: int,
                 cached_params: CarParamsT | None) -> tuple[str | None, dict, str, list[CarParams.CarFw], CarParams.FingerprintSource, bool]:
   fixed_fingerprint = os.environ.get('FINGERPRINT', "")
-  skip_fw_query = True
-  disable_fw_cache = True
+  skip_fw_query = os.environ.get('SKIP_FW_QUERY', False)
+  disable_fw_cache = False
   ecu_rx_addrs = set()
 
   start_time = time.monotonic()
@@ -201,6 +201,9 @@ def get_car(can_recv: CanRecvCallable, can_send: CanSendCallable, set_obd_multip
     found_car = find_car(selected_car.decode("utf-8"))
     if found_car is not None:
       candidate = found_car
+  elif candidate == "MOCK":
+    from opendbc.car.hyundai.values import CAR as HYUNDAI
+    candidate = HYUNDAI.HYUNDAI_CUSTIN_1ST_GEN
 
   print(f"SelectedCar = {candidate}")
   Params().put("CarName", candidate)
