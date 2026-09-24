@@ -201,14 +201,17 @@ class LateralMpc:
       self.solver.cost_set(i, 'W', W)
     self.solver.cost_set(N, 'W', W[:COST_E_DIM,:COST_E_DIM])
 
-  def run(self, x0, p, y_pts, heading_pts, yaw_rate_pts):
+  def run(self, x0, p, y_pts, heading_pts, yaw_rate_pts, turn_y_pts=None):
     global last_nav_gain, last_valid_x_sol, last_valid_u_sol
     x0_cp = np.copy(x0)
     p_cp = np.copy(p)
+    turn_active = (turn_y_pts is not None) and (len(turn_y_pts) > 0)
+    if turn_active and len(turn_y_pts) > N+1:
+      turn_y_pts = turn_y_pts[:N+1]
 
     self.solver.constraints_set(0, "lbx", x0_cp)
     self.solver.constraints_set(0, "ubx", x0_cp)
-    self.yref[:,0] = y_pts
+    self.yref[:,0] = turn_y_pts if turn_active else y_pts
 
     v_ego = p_cp[0, 0]
     v_kph = v_ego * 3.6

@@ -199,6 +199,10 @@ class CarrotServ:
     self.traffic_light_q = collections.deque(maxlen=int(2.0/0.1))  # 2 secnods
     self.traffic_light_count = -1
     self.traffic_state = 0
+    self.traffic_light_dist = 0.0
+    self.traffic_light_remain = 0.0
+    self.cross_remain_dist = 9999.0
+    self.stop_line_dist = 9999.0
 
     self.left_spd_sec = 0
     self.left_tbt_sec = 0
@@ -1005,7 +1009,7 @@ class CarrotServ:
     atc_desired = 250
     if atc_speed > 0 and x_dist_to_turn > 0:
       decel = self.autoNaviSpeedDecelRate
-      safe_sec = 2.0
+      safe_sec = 4.2 if x_turn_info in [1, 2] else 2.5
       atc_desired = min(atc_desired, self.calculate_current_speed(x_dist_to_turn - atc_dist, atc_speed, safe_sec, decel))
 
     #保持进匝道前的速度
@@ -1366,7 +1370,32 @@ class CarrotServ:
     if self.active_carrot <= 1 or self.active_kisa_count > 0:
       self.update_nav_instruction(sm)
 
-        # 绿灯时立刻清摄像头限速，避免绿灯拖刹
+    # 视觉红绿灯与停止线融合 (modelV2)
+    modelV2 = sm['modelV2']
+    try:
+      if hasattr(modelV2, 'stopLines') and len(modelV2.stopLines) > 0:
+        sl = modelV2.stopLines[0]
+        if hasattr(sl, 'position') and len(sl.position) > 0:
+          self.stop_line_dist = float(sl.position[0])
+      else:
+        self.stop_line_dist = 9999.0
+    except Exception:
+      self.stop_line_dist = 9999.0
+
+    try:
+      if hasattr(modelV2, 'trafficLights'):
+        for tl in modelV2.trafficLights:
+          if hasattr(tl, 'confidence') and tl.confidence > 0.65 and hasattr(tl, 'position') and len(tl.position) > 0 and tl.position[0] < 80.0:
+            if tl.state in (1, 3):  # red or yellow
+              self.traffic_state = 1
+              self.traffic_light_count = int(1.5 / DT_NAV)
+            elif tl.state == 2:  # green
+              self.traffic_state = 2
+              self.traffic_light_count = int(1.5 / DT_NAV)
+    except Exception:
+      pass
+
+    # 绿灯时立刻清摄像头限速，避免绿灯拖刹
     if self.traffic_state == 2 and self.xSpdType in [100, 101]:
         self.xSpdType = -1
         self.xSpdDist = self.xSpdLimit = 0
@@ -1408,8 +1437,8 @@ class CarrotServ:
     #print(f"sdi_speed: {sdi_speed}, hda_active: {hda_active}, xSpdType: {self.xSpdType}, xSpdDist: {self.xSpdDist}, active_carrot: {self.active_carrot}, v_ego_kph: {v_ego_kph}, nRoadLimitSpeed: {self.nRoadLimitSpeed}")
     ### TBT速度控制 self.atcSpeed, self.atcDist这两个变量均未用上
     atc_desired, self.atcType, self.atcSpeed, self.atcDist, atc_speed_up = self.update_auto_turn(v_ego*3.6, sm, self.xTurnInfo, self.xDistToTurn, True)
-    # 绿灯直行时，忽略转弯减速误判
-    if self.traffic_state == 2 and self.xTurnInfo in [1, 2]:
+    # 绿灯直行（非转弯动作）时，才忽略误判
+    if self.traffic_state == 2 and self.xTurnInfo not in [1, 2, 3, 4, 5, 7]:
         atc_desired = 250
         atc_desired_next = 250
         atc_speed_up = 0
@@ -1477,6 +1506,23 @@ class CarrotServ:
         (limit_speed, "road"),
       ]
 
+      # 红灯减速停车源
+      if self.traffic_state == 1:
+        stop_dist_cands = []
+        if 0 < self.cross_remain_dist < 200:
+          stop_dist_cands.append(self.cross_remain_dist)
+        if 0 < self.stop_line_dist < 120:
+          stop_dist_cands.append(self.stop_line_dist)
+        if 0 < self.xDistToTurn < 150:
+          stop_dist_cands.append(self.xDistToTurn)
+        if 0 < self.xSpdDist < 120 and self.xSpdType == 6:
+          stop_dist_cands.append(self.xSpdDist)
+
+        d_stop = min(stop_dist_cands) if len(stop_dist_cands) > 0 else 30.0
+        d_eff = max(0.0, d_stop - 2.5)
+        v_stop = math.sqrt(2.0 * d_eff * 1.2) * 3.6
+        speed_n_sources.append((max(0.0, v_stop), "traffic_light"))
+
     if not pure_highway_cruise:
       if self.turnSpeedControlMode in [1,2]:
         speed_n_sources.append((max(abs(vturn_speed), self.autoCurveSpeedLowerLimit), "vturn"))
@@ -1490,8 +1536,8 @@ class CarrotServ:
 
 
     desired_speed, source = min(speed_n_sources, key=lambda x: x[0])
-    # 绿灯时，desired_speed 不低于当前车速的 90%，防止点刹
-    if self.traffic_state == 2:
+    # 绿灯时，仅在直行且非急弯时维持车速，转弯或急弯时允许降速
+    if self.traffic_state == 2 and self.xTurnInfo not in [1, 2, 3, 4, 5, 7] and abs(vturn_speed) > 40:
         _min_keep = int(v_ego_kph * 0.9)
         if desired_speed < _min_keep and v_ego_kph > 10:
             desired_speed = _min_keep
@@ -1751,6 +1797,43 @@ class CarrotServ:
 
     self.active_count = 80
     now = time.monotonic()
+
+    # 高德导航红绿灯及路口剩余距离解析
+    tl_color = json.get("trafficLightColor", json.get("traffic_light_color", json.get("traffic_state", json.get("trafficState", json.get("tl_color", None)))))
+    if tl_color is not None:
+      if isinstance(tl_color, str):
+        s = tl_color.strip().lower()
+        if s in ("1", "red", "红", "red light"):
+          self.traffic_state = 1
+          self.traffic_light_count = int(2.5 / DT_NAV)
+        elif s in ("2", "green", "绿", "green light"):
+          self.traffic_state = 2
+          self.traffic_light_count = int(2.5 / DT_NAV)
+        elif s in ("3", "yellow", "黄", "yellow light"):
+          self.traffic_state = 1
+          self.traffic_light_count = int(2.5 / DT_NAV)
+      elif isinstance(tl_color, (int, float)):
+        c = int(tl_color)
+        if c in (1, 3):
+          self.traffic_state = 1
+          self.traffic_light_count = int(2.5 / DT_NAV)
+        elif c == 2:
+          self.traffic_state = 2
+          self.traffic_light_count = int(2.5 / DT_NAV)
+
+    tl_remain = json.get("trafficLightRemain", json.get("traffic_light_remain", json.get("traffic_light_time", json.get("tl_remain", None))))
+    if tl_remain is not None:
+      try:
+        self.traffic_light_remain = float(tl_remain)
+      except (ValueError, TypeError):
+        pass
+
+    cross_dist = json.get("cross_remain_dist", json.get("crossRemainDist", json.get("dist_to_cross", None)))
+    if cross_dist is not None:
+      try:
+        self.cross_remain_dist = float(cross_dist)
+      except (ValueError, TypeError):
+        pass
 
     if "goalPosX" in json:
       self.goalPosX = float(json.get("goalPosX", self.goalPosX))

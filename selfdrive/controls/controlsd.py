@@ -226,16 +226,38 @@ class Controls:
     hudControl.activeCarrot = self.sm['carrotMan'].activeCarrot
     hudControl.atcDistance = self.sm['carrotMan'].xDistToTurn
 
+    lp = self.sm['longitudinalPlan']
+    carrotMan = self.sm['carrotMan']
+    radarState = self.sm['radarState']
+    leadOne = radarState.leadOne
+
     if self.CP.pcmCruise:
+      # 1. 红灯防闯保护 (Stock ACC)
+      # 如果检测到红灯且前方无前车（前雷达无跟随目标），接近停止线时主动切断巡航油门
+      has_lead = leadOne.status
+      is_red_light = (lp.trafficState == 1 or carrotMan.trafficState == 1)
+      if CC.enabled and is_red_light and not has_lead:
+        d_to_stop = carrotMan.xDistToTurn if 0 < carrotMan.xDistToTurn < 100 else 25.0
+        if d_to_stop <= 25.0 or (CS.vEgo * CV.MS_TO_KPH <= 35.0 and d_to_stop <= 35.0) or desired_kph <= 15:
+          CC.cruiseControl.cancel = True
+
+      # 2. 弯道/拐弯防高速拖拽保护 (Stock ACC 最低 30km/h 物理限制)
+      # 在直角转弯（left/right turn）且入弯距离近、期望转弯速度 < 26km/h 时，
+      # 原厂定速 30km/h 偏快，主动 Cancel 巡航切断油门，由横向控制（latActive 在 D 档常驻）平顺转向过弯
+      is_turning = carrotMan.xTurnInfo in [1, 2]
+      if CC.enabled and is_turning:
+        if 0 < carrotMan.xDistToTurn < 22 and desired_kph < 26 and CS.vEgo * CV.MS_TO_KPH > 22.0:
+          CC.cruiseControl.cancel = True
+
       speed_from_pcm = self.params.get_int("SpeedFromPCM")
       if speed_from_pcm == 1:
         hudControl.setSpeed = float(CS.vCruiseCluster * CV.KPH_TO_MS)
       elif speed_from_pcm == 2:
-        hudControl.setSpeed = float(max(30/3.6, desired_kph * CV.KPH_TO_MS))
+        hudControl.setSpeed = float(max(20/3.6, desired_kph * CV.KPH_TO_MS))
       elif speed_from_pcm == 3:
         hudControl.setSpeed = setSpeed if lp.xState == 3 else float(desired_kph * CV.KPH_TO_MS)
       else:
-        hudControl.setSpeed = float(max(30/3.6, setSpeed))
+        hudControl.setSpeed = float(max(20/3.6, setSpeed))
     else:
       hudControl.setSpeed = setSpeed if lp.xState == 3 else float(desired_kph * CV.KPH_TO_MS)
 

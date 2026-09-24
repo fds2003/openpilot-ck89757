@@ -180,12 +180,13 @@ class CarInterface(CarInterfaceBase):
     ret.openpilotLongitudinalControl = alpha_long and ret.alphaLongitudinalAvailable
 
     # carrot, if camera_scc enabled, enable openpilotLongitudinalControl
-    if ret.flags & HyundaiFlags.CAMERA_SCC.value or params.get_int("EnableRadarTracks") > 0:
+    if (ret.flags & HyundaiFlags.CAMERA_SCC.value or params.get_int("EnableRadarTracks") > 0) and candidate != CAR.HYUNDAI_CUSTIN_1ST_GEN:
       ret.radarUnavailable = False
       ret.openpilotLongitudinalControl = True if camera_scc != 3 else False
       print(f"$$$OenpilotLongitudinalControl = True, CAMERA_SCC({ret.flags & HyundaiFlags.CAMERA_SCC.value}) or RadarTracks{params.get_int('EnableRadarTracks')}")
     else:
-      print(f"$$$OenpilotLongitudinalControl = {alpha_long}")
+      ret.openpilotLongitudinalControl = False if candidate == CAR.HYUNDAI_CUSTIN_1ST_GEN else (alpha_long and ret.alphaLongitudinalAvailable)
+      print(f"$$$OenpilotLongitudinalControl = {ret.openpilotLongitudinalControl}")
 
     #ret.radarUnavailable = False  # TODO: canfd... carrot, hyundai cars have radar
 
@@ -239,9 +240,12 @@ class CarInterface(CarInterfaceBase):
     # Car specific configuration overrides
 
     if candidate == CAR.HYUNDAI_CUSTIN_1ST_GEN:
+      ret.openpilotLongitudinalControl = False
+      ret.pcmCruise = True
+      ret.safetyConfigs[-1].safetyParam &= ~HyundaiSafetyFlags.LONG.value
       ret.startAccel = 1.0  # 库斯途 8AT 起步平顺防蹿车
       ret.stopAccel = -1.0  # 库斯途燃油版平顺刹停，避免红灯前停死瞬间点头
-      ret.stoppingControl = True
+      # ret.stoppingControl = True  # Deprecated in cereal CarParams schema
       ret.vEgoStarting = 0.1
       ret.steerActuatorDelay = 0.12  # 库斯途大轴距横向执行器延迟精细匹配
 
