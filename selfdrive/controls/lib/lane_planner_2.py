@@ -15,12 +15,12 @@ MAX_LANE_CENTERING_AWAY = 1.85
 KEEP_MIN_DISTANCE_FROM_LANE = 1.35
 KEEP_MIN_DISTANCE_FROM_EDGELANE = 1.15
 
-# ===================== 障碍物避让新增全局参数 =====================
-OBSTACLE_MAX_LONG_DIST = 28.0    # 障碍物生效最大纵向距离
-LANE_SHRINK_MAX_SIDE = 0.32      # 单侧车道最大收缩宽度(m)
-STATIC_OBS_PRE_SHIFT_MAX = 0.45  # 路边静态障碍最大预偏移量(m)
-OBS_FILTER_ALPHA = 0.16          # 障碍物车道收缩平滑系数
-PATH_SHIFT_ALPHA = 0.12          # 静态障碍路径偏移平滑系数
+# ===================== 障碍物避让全局参数 =====================
+OBSTACLE_MAX_LONG_DIST = 35.0    # 障碍物生效最大纵向距离
+LANE_SHRINK_MAX_SIDE = 0.45      # 单侧车道最大收缩宽度(m)
+STATIC_OBS_PRE_SHIFT_MAX = 0.65  # 路边静态障碍最大预偏移量(m)
+OBS_FILTER_ALPHA = 0.22          # 障碍物车道收缩平滑系数
+PATH_SHIFT_ALPHA = 0.20          # 静态障碍路径偏移平滑系数
 
 # ===== CD210 roadEdges 智能感知增强参数 =====
 ROAD_EDGE_PROB_THR = 0.30        # 路沿可信概率阈值
@@ -29,15 +29,8 @@ DEVIATION_NORM_THR = 0.82        # 归一化横向偏离阈值(|pos|>此值视�
 DEVIATION_CORRECT_STEP = 0.22    # 偏离时每帧往回拉量(m)
 NARROW_ROAD_RIGHT_TURN_MAX_Y = 1.5  # 右转窄路(双向两车道)最大末端偏出(m)
 ROADEDGE_CENTER_BLEND = 0.35     # 路口兜底：roadEdges中心混合比例
-TW_AVOID_SHIFT = 0.55            # 两轮车/行人独立避让偏移量(m,不被LaneOffset抵消)
+TW_AVOID_SHIFT = 0.75            # 两轮车/行人独立避让偏移量(m, 增大右侧安全间隙)
 # ===========================================================
-
-OBSTACLE_MAX_LONG_DIST = 28.0    # 障碍物生效最大纵向距离
-LANE_SHRINK_MAX_SIDE = 0.32      # 单侧车道最大收缩宽度(m)
-STATIC_OBS_PRE_SHIFT_MAX = 0.45  # 路边静态障碍最大预偏移量(m)
-OBS_FILTER_ALPHA = 0.16          # 障碍物车道收缩平滑系数
-PATH_SHIFT_ALPHA = 0.12          # 静态障碍路径偏移平滑系数
-# ==================================================================
 
 def clamp(num, min_value, max_value):
   # weird broken case, do something reasonable
@@ -184,8 +177,8 @@ class LanePlanner:
         side = 0
       obs_side = side
 
-      if o_type == "static":
-        # 路边静态障碍：收缩对应侧车道 + 路径反向预偏移
+      if o_type in ("static", "parked"):
+        # 路边静态/停放故障车辆：收缩对应侧车道 + 路径反向预偏移
         has_static = True
         if side == -1:
           shrink_l += LANE_SHRINK_MAX_SIDE * dist_weight
@@ -193,7 +186,7 @@ class LanePlanner:
         elif side == 1:
           shrink_r += LANE_SHRINK_MAX_SIDE * dist_weight
           path_shift -= STATIC_OBS_PRE_SHIFT_MAX * dist_weight
-      elif o_type in ["oncoming", "pedestrian", "motorcycle"]:
+      elif o_type in ["oncoming", "pedestrian", "motorcycle", "bicycle"]:
         # 对向/行人/二轮：双侧小幅收缩车道，弱化边界实现博弈绕行
         shrink_l += LANE_SHRINK_MAX_SIDE * 0.55 * dist_weight
         shrink_r += LANE_SHRINK_MAX_SIDE * 0.55 * dist_weight
@@ -217,10 +210,10 @@ class LanePlanner:
             continue
         _d_lat = obs.latDistance
         _o_type = obs.type
-        if _o_type not in ("motorcycle", "bicycle", "pedestrian"):
+        if _o_type not in ("motorcycle", "bicycle", "pedestrian", "twowheeler"):
             continue
         # 右侧同车道(或贴边)的两轮车/行人 -> 强制向左避让
-        if -0.3 < _d_lat < 1.6:
+        if -0.3 < _d_lat < 2.5:
             _dist_w = clamp(1.0 - (obs.longDistance / OBSTACLE_MAX_LONG_DIST), 0.0, 1.0)
             _tw_shift = min(_tw_shift + TW_AVOID_SHIFT * _dist_w, TW_AVOID_SHIFT)
     self.two_wheel_avoid_shift = _tw_shift

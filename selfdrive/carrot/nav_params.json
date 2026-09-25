@@ -54,5 +54,6 @@
   "AutoUpRoadLimit40KMH": 0,
   "AutoDoForkDecalDist": 35,
   "AutoForkDecalRate": 80,
-  "AutoForkSpeedMin": 45
+  "AutoForkSpeedMin": 45,
+  "RightAvoidDistance": 100
 }

@@ -176,6 +176,7 @@ class UnifiedParams:
             "DynamicExperimentalLatA": 0,
             "AtcResumeDelay": 3,
             "AtcResumeCnt": 5,
+            "RightAvoidDistance": 100,
         }
 
     def get_bool(self, key, default=False):

@@ -342,6 +342,19 @@ def estimate_turn_angle(md):
         return 0.0
 
 
+class ObstacleItem:
+    def __init__(self, long_dist, lat_dist, o_type, v_rel=0.0, v_lead=0.0):
+        self.longDistance = float(long_dist)
+        # 避让坐标系：正数为右侧障碍，负数为左侧障碍
+        self.latDistance = float(lat_dist)
+        self.type = str(o_type)
+        self.vRel = float(v_rel)
+        self.vLead = float(v_lead)
+
+    def __repr__(self):
+        return f"ObstacleItem(long={self.longDistance:.1f}, lat={self.latDistance:.1f}, type={self.type}, vLead={self.vLead:.1f})"
+
+
 class LateralPlanner:
     def __init__(self, CP, debug=False):
         self.factor1 = CP.wheelbase - CP.centerToFront
@@ -386,6 +399,14 @@ class LateralPlanner:
         self.has_static_obstacle = False
         self.has_roadside_parked = False
         self.has_left_pressure = False
+        self.right_avoid_dist_m = 1.0
+        self.has_oncoming_traffic = False
+        self.last_oncoming_detected_ts = 0.0
+        self.passing_obstacle = False
+        self.passed_distance = 0.0
+        self.last_avoid_offset = 0.0
+        self.extracted_obstacles = []
+        self.current_safe_left = -1.5
         self.default_steering_rate_cost = STEERING_RATE_COST
 
         self.nav_release_dist = NAV_DYNAMIC_DIST_DEFAULT
@@ -446,15 +467,129 @@ class LateralPlanner:
         self.x0 = x0
         self.lat_mpc.reset(x0=self.x0)
 
-    def _calc_obstacle_avoid_param(self, carrot):
-        HALF_CAR_WIDTH = 0.90
-        MIN_SAFETY_MARGIN = 0.25
-        MAX_SAFETY_MARGIN = 0.60
-        CLOSE_DIST = 10.0
-        FAR_DIST = 30.0
+    def _extract_obstacles_and_oncoming(self, sm):
+        """
+        从 radarState 与 modelV2 实时提取右侧障碍物（行人、非机动车、故障车辆），
+        并全面监测左侧对向车道是否有来车（Oncoming Traffic）。
+        """
+        obs_list = []
+        has_oncoming = False
+        v_ego = self.v_ego
+        now_ts = time.time()
+
+        # 1. 监测毫米波雷达
+        if sm.seen['radarState'] and sm.alive['radarState']:
+            rs = sm['radarState']
+
+            # --- A. 监测左侧对向来车 (leadsLeft, leadsLeft2, leadLeft) ---
+            left_candidates = []
+            if rs.leadLeft.status:
+                left_candidates.append(rs.leadLeft)
+            for ld in getattr(rs, 'leadsLeft2', []):
+                if ld.status:
+                    left_candidates.append(ld)
+            for ld in getattr(rs, 'leadsLeft', []):
+                if ld.status:
+                    left_candidates.append(ld)
+
+            for ld in left_candidates:
+                d_rel = float(ld.dRel)
+                y_rel = float(ld.yRel)
+                v_rel = float(ld.vRel)
+                v_lead = float(ld.vLead)
+
+                # 左侧区域: y_rel > 0 (雷达坐标系下正数为左)
+                # 判定对向来车条件: 距离在75米以内，且对向驶来 (v_rel < -1.5m/s 或 v_lead < -1.0m/s，或 closing 速度明显大于自车速)
+                if 2.0 < d_rel < 75.0 and y_rel > 0.3:
+                    if v_rel < -1.5 or v_lead < -1.0 or (v_ego > 2.0 and v_rel < -v_ego + 1.0):
+                        has_oncoming = True
+                        break
+
+            # --- B. 提取右侧障碍物 (leadsRight, leadsRight2, leadRight) ---
+            right_candidates = []
+            if rs.leadRight.status:
+                right_candidates.append(rs.leadRight)
+            for ld in getattr(rs, 'leadsRight2', []):
+                if ld.status:
+                    right_candidates.append(ld)
+            for ld in getattr(rs, 'leadsRight', []):
+                if ld.status:
+                    right_candidates.append(ld)
+
+            seen_pos = []
+            for ld in right_candidates:
+                d_long = float(ld.dRel)
+                y_rel = float(ld.yRel)
+                v_rel = float(ld.vRel)
+                v_lead = float(ld.vLead)
+
+                # 雷达坐标系下负数为右，转为避让坐标系 d_lat = -y_rel > 0
+                d_lat = -y_rel
+                if 1.0 < d_long < 42.0 and 0.4 < d_lat < 3.8:
+                    # 避免近距离重复目标
+                    dup = False
+                    for (slong, slat) in seen_pos:
+                        if abs(d_long - slong) < 3.5 and abs(d_lat - slat) < 0.8:
+                            dup = True
+                            break
+                    if dup:
+                        continue
+                    seen_pos.append((d_long, d_lat))
+
+                    # 目标类型判定
+                    if abs(v_lead) < 1.5:
+                        # 速度极低或静止: 故障车/路边停放车/静止障碍物
+                        o_type = "parked" if d_lat > 1.1 else "static"
+                    elif 1.5 <= v_lead < 8.5:
+                        # 速度在5~30km/h: 行人/自行车/电瓶车等非机动车
+                        o_type = "motorcycle" if v_lead > 4.0 else "pedestrian"
+                    else:
+                        o_type = "car"
+
+                    obs_list.append(ObstacleItem(d_long, d_lat, o_type, v_rel, v_lead))
+
+        # 2. 监测视觉模型 modelV2
+        if sm.seen['modelV2'] and sm.alive['modelV2']:
+            md = sm['modelV2']
+            if len(md.leadsV3) > 0:
+                for lead in md.leadsV3:
+                    if lead.prob > 0.35 and len(lead.x) > 0 and len(lead.y) > 0:
+                        lx = float(lead.x[0])
+                        ly = float(lead.y[0])
+                        lv = float(lead.v[0]) if len(lead.v) > 0 else 0.0
+
+                        # 视觉坐标系下: ly > 0 为左，ly < 0 为右
+                        # 对向来车校验
+                        if 3.0 < lx < 65.0 and ly > 0.4:
+                            if lv < -1.0 or (v_ego > 2.0 and lv < v_ego * 0.4):
+                                has_oncoming = True
+
+                        # 右侧目标补充 (d_lat = -ly > 0)
+                        d_lat_v = -ly
+                        if 1.5 < lx < 35.0 and 0.5 < d_lat_v < 3.2:
+                            dup = False
+                            for o in obs_list:
+                                if abs(lx - o.longDistance) < 4.0 and abs(d_lat_v - o.latDistance) < 1.0:
+                                    dup = True
+                                    break
+                            if not dup:
+                                o_type_v = "parked" if abs(lv) < 1.5 else "motorcycle"
+                                obs_list.append(ObstacleItem(lx, d_lat_v, o_type_v, 0.0, lv))
+
+        # 对向来车安全锁定与平滑冷却（维持1.8秒，防止闪烁）
+        if has_oncoming:
+            self.last_oncoming_detected_ts = now_ts
+        self.has_oncoming_traffic = (now_ts - getattr(self, 'last_oncoming_detected_ts', 0.0)) < 1.8
+
+        return obs_list
+
+    def _calc_obstacle_avoid_param(self, carrot, obs_list=None):
+        HALF_CAR_WIDTH = 0.925   # 现代库斯途车宽1.85m -> 半宽0.925m
+        FAR_DIST = 35.0
+        ROADSIDE_DIST_THRESH = 3.5
         OBS_HALF_WIDTH = {
-            "pedestrian": 0.25, "motorcycle": 0.35, "bicycle": 0.30,
-            "parked": 0.90, "static": 0.60, "oncoming": 0.90, "unknown": 0.60,
+            "pedestrian": 0.35, "motorcycle": 0.45, "bicycle": 0.40,
+            "parked": 0.95, "static": 0.75, "car": 0.90, "unknown": 0.60,
         }
         target_offset = 0.0
         curv_gain = 1.0
@@ -465,21 +600,18 @@ class LateralPlanner:
         max_left_push = 0.0
         max_right_push = 0.0
         profile = np.zeros(TRAJECTORY_SIZE, dtype=np.float64)
-        try:
+
+        if obs_list is None:
             try:
-                obs_list = carrot.obstacles
+                obs_list = getattr(self, 'extracted_obstacles', [])
             except Exception:
                 obs_list = []
-        except Exception:
-            self.obs_target_offset = 0.0
-            self.obs_smooth_offset = 0.0
-            self.obs_curv_gain = 1.0
-            self.obs_closest_dist = float("inf")
-            self.has_static_obstacle = False
-            self.has_roadside_parked = False
-            self.has_left_pressure = False
-            self.obs_offset_profile = np.zeros(TRAJECTORY_SIZE, dtype=np.float32)
-            return
+
+        # 动态安全净距离：从参数读取（默认1.0m，可在80cm~150cm菜单调节）
+        D_safe_base = getattr(self, 'right_avoid_dist_m', 1.0)
+        D_safe_base = float(np.clip(D_safe_base, 0.70, 1.50))
+
+        closest_obs = None
         for obs in obs_list:
             try:
                 d_long = float(obs.longDistance)
@@ -487,33 +619,54 @@ class LateralPlanner:
                 o_type = str(obs.type)
             except Exception:
                 continue
+
             if d_long > OBSTACLE_MAX_DETECT_LONG or d_long < 0.5:
                 continue
-            min_dist = min(min_dist, d_long)
-            if d_long < CLOSE_DIST:
-                dynamic_margin = MAX_SAFETY_MARGIN
+
+            if d_long < min_dist:
+                min_dist = d_long
+                closest_obs = obs
+
+            # 区分不同障碍物类型的目标安全净距
+            if o_type in ("pedestrian", "motorcycle", "bicycle"):
+                # 行人/非机动车：由于摇摆不稳定性，安全净距上浮0.1m
+                D_safe = max(D_safe_base, 1.05)
+            elif o_type in ("parked", "static"):
+                D_safe = D_safe_base
             else:
-                t = np.clip((d_long - CLOSE_DIST) / (FAR_DIST - CLOSE_DIST), 0.0, 1.0)
-                dynamic_margin = MAX_SAFETY_MARGIN + (MIN_SAFETY_MARGIN - MAX_SAFETY_MARGIN) * t
+                D_safe = D_safe_base * 0.9
+
             obs_hw = OBS_HALF_WIDTH.get(o_type, 0.60)
-            # ★ 左/右避让不对称修复:left_boost 原条件 `if d_lat < 0` 把 1.15 增强
-            #   错配到了作者标记的「右」侧(与变量名 left_boost、has_left_pressure
-            #   同为 d_lat>=0 侧的设计不一致),导致右侧避让比左侧强。改回 d_lat>=0
-            #   (左)侧,使左侧间隙也获得 1.15 增强,追平右侧。
-            _left_boost = self.left_boost if d_lat >= 0 else 1.0
-            required_clearance = (abs(d_lat) + obs_hw + HALF_CAR_WIDTH + dynamic_margin) * _left_boost
+
+            # d_lat > 0 表示位于自车右侧
+            # 计算自车右边缘与障碍物左边缘之间的真实物理间隙（gap）
+            # gap = d_lat - obs_hw - HALF_CAR_WIDTH
+            gap = abs(d_lat) - obs_hw - HALF_CAR_WIDTH
+            gap_deficit = max(0.0, D_safe - gap)
+
+            # 纵向距离平滑加权 (接近12m以内满响应，至35m平滑衰减)
+            dist_weight = float(np.clip(1.0 - (d_long - 12.0) / 23.0, 0.0, 1.0))
+            required_shift = gap_deficit * dist_weight
+
+            # 限幅单次最大避让量（不超过0.95m，避免过激转向）
+            required_shift = float(np.clip(required_shift, 0.0, 0.95))
+
             if d_lat >= 0:
-                push = -required_clearance
-                max_left_push = max(max_left_push, abs(push))
+                # 右侧障碍物 -> 向左避让 (当前fork坐标系负数为左)
+                push = -required_shift
+                max_left_push = max(max_left_push, required_shift)
                 if d_lat > 0.3:
                     has_left_pressure = True
             else:
-                push = required_clearance
+                # 左侧障碍物 -> 向右避让 (正数为右)
+                push = required_shift
                 max_right_push = max(max_right_push, push)
+
             if o_type in ("parked", "static") and abs(d_lat) < ROADSIDE_DIST_THRESH:
                 has_roadside_parked = True
             if o_type in ("static", "parked", "unknown"):
                 has_static = True
+
             idx_center = int(np.clip(d_long / max(FAR_DIST, 1.0) * (TRAJECTORY_SIZE - 1), 0, TRAJECTORY_SIZE - 1))
             span = 4
             i0 = max(0, idx_center - span)
@@ -524,34 +677,66 @@ class LateralPlanner:
                     profile[i] = min(profile[i], push * w)
                 else:
                     profile[i] = max(profile[i], push * w)
-            now_ts = time.time()
-            if (now_ts - getattr(self, '_last_obs_chk_t', 0.0)) > 5.0:
-                cloudlog.warning(
-                    f"[OBS-ENVELOPE] type={o_type} d_lat={d_lat:.2f} "
-                    f"obs_hw={obs_hw:.2f} margin={dynamic_margin:.2f} "
-                    f"clearance={required_clearance:.2f} push={push:.2f}"
-                )
-                self._last_obs_chk_t = now_ts
+
+        now_ts = time.time()
+        # ===== 超车并排保持 (Pass-by Hold) 与 通过后立即回中 (Immediate Return) =====
+        dt = DT_MDL
+        if min_dist < 3.5 and closest_obs is not None:
+            # 障碍物进入车头近区 -> 启动超车保持状态
+            self.passing_obstacle = True
+            self.passed_distance = 0.0
+            self.last_avoid_offset = -max_left_push if max_left_push > 0 else (max_right_push if max_right_push > 0 else self.obs_smooth_offset)
+        elif self.passing_obstacle:
+            # 车身正在掠过障碍物：前雷达视野可能丢失，此时积分车身位移
+            self.passed_distance += max(self.v_ego, 0.5) * dt
+            # 车长约4.8m，位移超过5.2m说明车尾已完全通过障碍物
+            if self.passed_distance < 5.2:
+                # 依然在侧面掠过期间，维持之前的避让偏移量
+                if abs(self.last_avoid_offset) > 0.10:
+                    if self.last_avoid_offset < 0:
+                        max_left_push = max(max_left_push, abs(self.last_avoid_offset))
+                    else:
+                        max_right_push = max(max_right_push, self.last_avoid_offset)
+            else:
+                # 完全越过障碍物！立即结束超车保持状态
+                self.passing_obstacle = False
+                self.passed_distance = 0.0
+
         if max_left_push > 0:
             target_offset = -max_left_push
         elif max_right_push > 0:
             target_offset = max_right_push
         else:
             target_offset = 0.0
-        target_offset = np.clip(target_offset, -2.0, 1.8)
-        _smooth_alpha = self.left_smooth_alpha if target_offset < 0 else OBSTACLE_SMOOTH_ALPHA
-        self.obs_smooth_offset = _smooth_alpha * target_offset + (1 - _smooth_alpha) * self.obs_smooth_offset
+
+        # 限幅目标偏置量
+        target_offset = np.clip(target_offset, -1.2, 1.2)
+
+        # 滤波平滑：
+        # 如果当前需要避让 (target_offset != 0)，平滑介入
+        # 如果已经通过障碍物 (target_offset == 0)，“通过障碍物后，立即回到自己的车道居中行驶”
+        if abs(target_offset) < 0.02:
+            # 立即回中：采用高滤波响应速率 (alpha = 0.45)，约0.8秒完全居中
+            _smooth_alpha = 0.45
+            self.obs_smooth_offset = _smooth_alpha * 0.0 + (1 - _smooth_alpha) * self.obs_smooth_offset
+            if abs(self.obs_smooth_offset) < 0.03:
+                self.obs_smooth_offset = 0.0
+        else:
+            _smooth_alpha = self.left_smooth_alpha if target_offset < 0 else OBSTACLE_SMOOTH_ALPHA
+            self.obs_smooth_offset = _smooth_alpha * target_offset + (1 - _smooth_alpha) * self.obs_smooth_offset
+
         self.obs_target_offset = self.obs_smooth_offset
         self.obs_curv_gain = np.clip(curv_gain, 1.0, OBS_EXTRA_GAIN_MAX)
         self.obs_closest_dist = min_dist
         self.has_static_obstacle = has_static
         self.has_roadside_parked = has_roadside_parked
         self.has_left_pressure = has_left_pressure
+
         prev = getattr(self, '_obs_profile_prev', np.zeros(TRAJECTORY_SIZE))
-        a = OBSTACLE_SMOOTH_ALPHA
+        a = 0.45 if abs(target_offset) < 0.02 else OBSTACLE_SMOOTH_ALPHA
         profile_smooth = a * profile + (1 - a) * prev
         self._obs_profile_prev = profile_smooth.copy()
-        self.obs_offset_profile = np.clip(profile_smooth, -1.8, 1.8).astype(np.float32)
+        self.obs_offset_profile = np.clip(profile_smooth, -1.2, 1.2).astype(np.float32)
 
     def _calc_nav_dynamic_release(self, sm):
         cross_total_len, cross_remain_dist, turn_dir, has_target_lane, is_short_cross, is_mid_cross = get_nav_cross_info()
@@ -611,6 +796,19 @@ class LateralPlanner:
             self.left_boost = 1.15
             self.left_smooth_alpha = 0.55
             self.left_gravity = 0.30
+            try:
+                self.right_avoid_dist_m = float(self.params.get_int("RightAvoidDistance")) * 0.01
+                if self.right_avoid_dist_m < 0.5:
+                    self.right_avoid_dist_m = 1.0
+            except Exception:
+                try:
+                    from openpilot.selfdrive.carrot.config import CarrotConfig
+                    self.right_avoid_dist_m = float(CarrotConfig().get_int("RightAvoidDistance", 100)) * 0.01
+                except Exception:
+                    self.right_avoid_dist_m = 1.0
+
+        # 从雷达与视觉融合提取右侧障碍物及左侧对向来车
+        self.extracted_obstacles = self._extract_obstacles_and_oncoming(sm)
 
         if high_speed_mode:
             if self.v_ego > 110.0 / 3.6:
@@ -630,7 +828,7 @@ class LateralPlanner:
                 self.has_roadside_parked = False
                 self.has_left_pressure = False
         else:
-            self._calc_obstacle_avoid_param(carrot)
+            self._calc_obstacle_avoid_param(carrot, self.extracted_obstacles)
 
         # 盲区雷达兜底逻辑已移至 _in_turn_scene 判定之后(下方),转弯/弯道场景排除,避免误触发降速。
 
@@ -1005,6 +1203,10 @@ class LateralPlanner:
             self.v_ego = self.v_plan[0]
 
         self.LP.parse_model(md)
+        try:
+            self.LP.update_obstacle_data(self.extracted_obstacles)
+        except Exception:
+            pass
 
         if global_in_turn and not high_speed_mode:
             self.LP.obstacle_avoid_scale = 0.6
@@ -1074,34 +1276,41 @@ class LateralPlanner:
 
         lane_left_bound = -(lane_w_left / 2.0)
         lane_right_bound = lane_w_right / 2.0
-        safe_left = lane_left_bound + final_total_margin + 0.04
+        base_safe_left = lane_left_bound + final_total_margin + 0.04
         safe_right = lane_right_bound - curr_margin
 
         if left_turn_active or is_left_turn_scene:
-            safe_left += 0.16
+            base_safe_left += 0.16
             self.path_xyz[:, 1] += 0.10
         if right_turn_active:
             safe_right = lane_right_bound - RIGHT_TURN_SAFE_MARGIN
             self.path_xyz[:, 1] += 0.10
         if is_left_turn_scene or left_turn_active:
-            safe_left += 0.05
+            base_safe_left += 0.05
 
-        if not high_speed_mode and not _in_turn_scene:
-            if self.has_roadside_parked:
-                if self.obs_closest_dist < 15.0:
-                    safe_left -= 1.0
-                    safe_right += 1.0
-                elif self.obs_closest_dist < 25.0:
-                    safe_left -= 0.7
-                    safe_right += 0.7
-                final_total_margin *= 0.4
-            elif self.has_static_obstacle:
-                if self.obs_closest_dist < 20.0:
-                    safe_left -= 0.5
-                    safe_right += 0.5
-                elif self.obs_closest_dist < 30.0:
-                    safe_left -= 0.3
-                    safe_right += 0.3
+        # ===== 故障车越实线借道与对向来车严苛判定 =====
+        # 1. 默认执行严格的左侧车道硬约束。
+        # 2. 如果右侧有故障车/静止车，允许越过实线借道避让。
+        # 3. 必须保证对向车道没有来车！如果有对向来车，坚决不允许越过实线，严格保持车道内硬约束。
+        # 4. 通过障碍物后，立即恢复车道硬约束，居中行驶。
+        is_broken_down = self.has_roadside_parked or self.has_static_obstacle
+        is_needing_borrow = self.obs_smooth_offset < -0.15
+        allow_borrow_line = (
+            is_broken_down
+            and not self.has_oncoming_traffic
+            and is_needing_borrow
+            and not high_speed_mode
+            and not _in_turn_scene
+        )
+
+        if allow_borrow_line:
+            # 对向无来车，允许越过左侧实线借道避让（向左放宽0.85米）
+            safe_left = lane_left_bound - 0.85
+        else:
+            # 对向有来车，或无故障车，或已通过障碍物：严格执行左侧车道硬约束
+            safe_left = base_safe_left
+
+        self.current_safe_left = safe_left
 
         if not _in_turn_scene:
             self.path_xyz[:, 1] = np.clip(self.path_xyz[:, 1], safe_left, safe_right)
@@ -1178,10 +1387,7 @@ class LateralPlanner:
         _safe_to_boost = True
         _has_roadside = False
         try:
-            try:
-                _obs_list = carrot.obstacles
-            except Exception:
-                _obs_list = []
+            _obs_list = getattr(self, 'extracted_obstacles', [])
             for _obs in _obs_list:
                 try:
                     _d_long = float(_obs.longDistance)
@@ -1314,7 +1520,8 @@ class LateralPlanner:
             if _current_y0 > -0.10:
                 self.path_xyz[0, 1] = -0.10
 
-        self.path_xyz[:, 1] = np.clip(self.path_xyz[:, 1], GLOBAL_Y_MIN, _gy_max)
+        _eff_safe_left = getattr(self, 'current_safe_left', safe_left)
+        self.path_xyz[:, 1] = np.clip(self.path_xyz[:, 1], _eff_safe_left, _gy_max)
 
         if _in_turn_scene and not right_turn_active:
             _rate_limit = 0.30
