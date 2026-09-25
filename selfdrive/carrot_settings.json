@@ -15,6 +15,19 @@
       "unit": 1
     },
     {
+      "group": "조향일반",
+      "name": "RightAvoidDistance",
+      "title": "우측장애물 안전거리(cm)",
+      "descr": "보행자/오토바이/고장차 우측 회피 안전거리(80~150cm)",
+      "egroup": "LAT",
+      "etitle": "右侧避让安全净距(cm)",
+      "edescr": "遇右侧行人/非机动车/故障车时的安全避让净距(cm)，推荐80~110cm，默认100cm(1.0米)",
+      "min": 80,
+      "max": 150,
+      "default": 100,
+      "unit": 5
+    },
+    {
       "group": "조향튜닝",
       "name": "LateralTorqueCustom",
       "title": "_LateralTorqueCustom(0)",

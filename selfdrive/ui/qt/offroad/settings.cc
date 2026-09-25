@@ -721,6 +721,7 @@ CarrotPanel::CarrotPanel(QWidget* parent) : QWidget(parent) {
   cruiseToggles->addItem(new CValueControl("MyDrivingModeAuto", "驾驶模式自动", "0:关闭,1:开启(仅普通模式)", 0, 1, 1));
   cruiseToggles->addItem(new CValueControl("TrafficLightDetectMode", "红绿灯检测模式", "0:无,1:仅停止,2:停走模式", 0, 2, 1));
   cruiseToggles->addItem(new CValueControl("CustomAEB", "全场景紧急防碰撞/制动(AEB)", "非导航/手动/ACC全场景下遇前车急刹、静止车或路面障碍物时主动紧急制动并完全刹停(0:关闭, 1:标准, 2:灵敏)", 0, 2, 1));
+  cruiseToggles->addItem(new CValueControl("RightAvoidDistance", "右侧避让安全净距(cm)", "遇右侧行人/非机动车/故障车时的横向安全避让净距(cm)，推荐80~110cm，默认100cm(1.0米)", 80, 150, 5));
 
   //cruiseToggles->addItem(new CValueControl("CruiseSpeedMin", "CRUISE: Speed Lower limit(10)", "Cruise control MIN speed", 5, 50, 1));
   //cruiseToggles->addItem(new CValueControl("AutoResumeFromGas", "GAS CRUISE ON: Use", "Auto Cruise on when GAS pedal released, 60% Gas Cruise On automatically", 0, 3, 1));
@@ -732,10 +733,10 @@ CarrotPanel::CarrotPanel(QWidget* parent) : QWidget(parent) {
   //cruiseToggles->addItem(new CValueControl("MyHighModeFactor", "DRIVEMODE: HIGH ratio(100%)", "AccelRatio control ratio", 100, 300, 10));
 
   latLongToggles = new ListWidget(this);
+  latLongToggles->addItem(new CValueControl("RightAvoidDistance", "右侧避让安全净距(cm)", "遇右侧行人/非机动车/故障车时的横向安全避让净距(cm)，推荐80~110cm，默认100cm(1.0米)", 80, 150, 5));
   latLongToggles->addItem(new CValueControl("UseLaneLineSpeed", "车道线模式速度(0)", "车道线模式，使用 lat_mpc 控制", 0, 200, 5));
   latLongToggles->addItem(new CValueControl("UseLaneLineCurveSpeed", "车道线模式弯道速度(0)", "车道线模式，仅在高速时生效", 0, 200, 5));
   latLongToggles->addItem(new CValueControl("AdjustLaneOffset", "车道偏移调整(0)cm", "", 0, 500, 5));
-  latLongToggles->addItem(new CValueControl("RightAvoidDistance", "右侧障碍物避让净距(100)cm", "避让右侧行人、非机动车及故障车的横向安全净距(cm)，范围80~150cm，默认100cm", 80, 150, 5));
   latLongToggles->addItem(new CValueControl("AdjustCurveOffset", "弯道偏移调整(0)cm", "", -500, 500, 5));
   latLongToggles->addItem(new CValueControl("LaneChangeNeedTorque", "轻推方向变道", "-1:禁用变道, 0:无需轻推方向, 1:需要轻推方向变道", -1, 1, 1));
   latLongToggles->addItem(new CValueControl("AutoLaneChangeMinSpeed", "打灯变道最低速度", "低于这个速度打灯不自动变道", -1, 100, 5));
