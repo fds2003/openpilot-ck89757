@@ -55,5 +55,6 @@
   "AutoDoForkDecalDist": 35,
   "AutoForkDecalRate": 80,
   "AutoForkSpeedMin": 45,
-  "RightAvoidDistance": 100
+  "RightAvoidDistance": 100,
+  "CustomAEB": 1
 }

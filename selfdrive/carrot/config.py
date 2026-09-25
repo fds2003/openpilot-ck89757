@@ -177,6 +177,7 @@ class UnifiedParams:
             "AtcResumeDelay": 3,
             "AtcResumeCnt": 5,
             "RightAvoidDistance": 100,
+            "CustomAEB": 1,
         }
 
     def get_bool(self, key, default=False):

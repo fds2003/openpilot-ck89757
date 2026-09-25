@@ -368,6 +368,29 @@ class CarController(CarControllerBase):
 
       if not self.CP.openpilotLongitudinalControl:
         can_sends.extend(self.create_button_messages(CC, CS, use_clu11=True))
+
+        # 50Hz 全场景紧急防碰撞制动 (AEB)
+        # 当 openpilotLongitudinalControl 为 False 时（如库斯途原厂雷达长控架构），
+        # 遇前方追尾或静止障碍物碰撞威胁，直接向 CAN Bus 0 发送 FCA11 物理刹停指令驱动底盘 ESC 制动！
+        if self.frame % 2 == 0 and (self.CP.flags & HyundaiFlags.USE_FCA.value or self.car_fingerprint == CAR.HYUNDAI_CUSTIN_1ST_GEN):
+          aeb_triggered = (hud_control.activeCarrot == 9) or (hud_control.visualAlert == VisualAlert.fcw)
+          if aeb_triggered:
+            # 计算所需减速度 (g)，限定在安全强力制动区间 [0.40g, 0.85g]
+            decel_g = float(np.clip(abs(accel) / 9.81, 0.40, 0.85)) if abs(accel) > 1.0 else 0.55
+            # 当本车车速较低或处于制动停止状态时，请求 StopReq 彻底刹停防溜
+            stop_req = stopping or (CS.out.vEgo < 3.0 * CV.KPH_TO_MS)
+            ttc_val = float(hud_control.leadDistance / max(0.5, abs(hud_control.leadRelSpeed))) if hud_control.leadRelSpeed < -0.1 else 0.0
+            fca11_msg = hyundaican.create_fca11(
+              self.packer,
+              self.frame,
+              aeb_active=True,
+              stop_req=stop_req,
+              decel_g=decel_g,
+              warn_level=2,
+              ttc=ttc_val,
+              v_rel=hud_control.leadRelSpeed
+            )
+            can_sends.append(fca11_msg)
       if self.CP.carFingerprint in CAN_GEARS["send_mdps12"]:  # send mdps12 to LKAS to prevent LKAS error
         can_sends.append(hyundaican.create_mdps12(self.packer, self.frame, CS.mdps12))
 

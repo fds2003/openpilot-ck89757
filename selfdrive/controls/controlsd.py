@@ -48,6 +48,8 @@ class Controls:
         "right": {"main": {"dRel": None, "lat": None}, "sub": {"dRel": None, "lat": None}},
     }
     self.LoC = LongControl(self.CP)
+    self.aeb_active = False
+    self.aeb_hold_frames = 0
     self.VM = VehicleModel(self.CP)
     self.LaC: LatControl
     if self.CP.steerControlType == car.CarParams.SteerControlType.angle:
@@ -273,6 +275,88 @@ class Controls:
     hudControl.leadRelSpeed = leadOne.vRel if leadOne.status else 0
     hudControl.leadRadar = 1 if leadOne.radar else 0
     hudControl.leadDPath = leadOne.dPath
+
+    # 视觉前向目标兜底 (若雷达未检出前车但视觉网络高置信度识别前车)
+    if (not leadOne.status or hudControl.leadDistance <= 0.1) and len(self.sm['modelV2'].leadsV3) > 0:
+      vis_lead = self.sm['modelV2'].leadsV3[0]
+      if vis_lead.prob > 0.55:
+        hudControl.leadDistance = float(vis_lead.x[0])
+        hudControl.leadRelSpeed = float(vis_lead.v[0])
+        hudControl.leadRadar = 0
+        hudControl.leadDPath = float(vis_lead.y[0])
+        hudControl.leadVisible = True
+
+    # ------------------ 全场景紧急防碰撞与主动刹停 (AEB) ------------------
+    custom_aeb = self.params.get_int("CustomAEB")
+    if custom_aeb > 0:
+      v_ego = CS.vEgo
+      gear_ok = CS.gearShifter in (car.CarState.GearShifter.drive, car.CarState.GearShifter.unknown) or CS.gearStep > 0
+
+      lead_d = hudControl.leadDistance
+      lead_v_rel = hudControl.leadRelSpeed
+      lead_dpath = hudControl.leadDPath
+      lead_status = (hudControl.leadRadar > 0) or (lead_d > 0.1)
+
+      lead_in_lane = lead_status and abs(lead_dpath) < 1.15 and lead_d > 0.5
+      lead_abs_v = v_ego + lead_v_rel
+      ttc = (lead_d / max(0.2, abs(lead_v_rel))) if (lead_in_lane and lead_v_rel < -0.3) else 999.0
+
+      a_decel = 3.6 if custom_aeb == 1 else 3.0
+      d_min_stop = (v_ego ** 2) / (2.0 * a_decel) + 2.5
+      ttc_thresh = 1.8 if custom_aeb == 1 else 2.1
+
+      is_imminent_crash = False
+      is_pre_warning = False
+
+      if lead_in_lane and gear_ok:
+        # 1. 急剧追尾风险 (TTC过小)
+        if ttc < ttc_thresh and lead_d < 45.0 and v_ego > 1.0:
+          is_imminent_crash = True
+        # 2. 静止车辆/障碍物逼近 (前车停死，自车未减速到安全停距内)
+        elif lead_abs_v < 1.2 and lead_d < d_min_stop and v_ego > 1.2:
+          is_imminent_crash = True
+        # 3. 极端近距碰撞兜底 (< 3.8m 仍在前进)
+        elif lead_d < 3.8 and v_ego > 0.8:
+          is_imminent_crash = True
+        # 预警阈值
+        elif ttc < (ttc_thresh + 0.6) or (lead_abs_v < 1.2 and lead_d < d_min_stop + 5.0 and v_ego > 2.0):
+          is_pre_warning = True
+
+      # 驾驶员深踩油门避障允许超控 (当 TTC 仍 > 1.2s 时)
+      driver_override = CS.gasPressed and (ttc > 1.2) and not (lead_d < 3.0)
+
+      if is_imminent_crash and not driver_override:
+        self.aeb_active = True
+        self.aeb_hold_frames = int(2.0 / DT_CTRL) # 刹停后防溜保持 2 秒
+      elif self.aeb_active:
+        # 刹停状态保持逻辑
+        if v_ego < 0.3:
+          if self.aeb_hold_frames > 0 and not CS.brakePressed:
+            self.aeb_hold_frames -= 1
+          else:
+            self.aeb_active = False
+        elif not lead_in_lane or lead_d > 8.0 or lead_v_rel > 1.5:
+          self.aeb_active = False
+
+      # 执行制动与动力切断
+      if self.aeb_active:
+        # 1. 坚决切断巡航油门
+        CC.cruiseControl.cancel = True
+        # 2. 声光最高优先级报警
+        hudControl.visualAlert = car.CarControl.HUDControl.VisualAlert.fcw
+        # 3. 标记 AEB 激活
+        hudControl.activeCarrot = 9
+        # 4. 计算减速度请求 (至少 0.45g，最高 0.85g)
+        req_a = max(4.5, (lead_v_rel ** 2) / (2.0 * max(1.0, lead_d - 2.0))) if lead_v_rel < -0.5 else max(4.5, (v_ego ** 2) / (2.0 * max(1.0, lead_d - 2.0)))
+        req_a = min(8.3, req_a)
+        CC.actuators.accel = -float(req_a)
+        if v_ego < 2.5 or lead_d < 5.0:
+          CC.actuators.longControlState = car.CarControl.Actuators.LongControlState.stopping
+      elif is_pre_warning:
+        # 预警阶段：若开着原厂巡航，提前 Cancel 切断油门并发出 FCW 警告
+        CC.cruiseControl.cancel = True
+        hudControl.visualAlert = car.CarControl.HUDControl.VisualAlert.fcw
+
     meta = self.sm['modelV2'].meta
     hudControl.modelDesire = 1 if meta.desire == log.Desire.turnLeft else 2 if meta.desire == log.Desire.turnRight else 0
 

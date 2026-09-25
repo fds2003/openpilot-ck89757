@@ -1,5 +1,6 @@
 import copy
 import crcmod
+import numpy as np
 from opendbc.car.hyundai.values import CAR, HyundaiFlags
 
 hyundai_checksum = crcmod.mkCrcFun(0x11D, initCrc=0xFD, rev=False, xorOut=0xdf)
@@ -325,6 +326,30 @@ def create_acc_commands(packer, enabled, accel, jerk, idx, hud_control, set_spee
     commands.append(packer.make_can_msg("FCA11", 0, fca11_values))
 
   return commands
+
+def create_fca11(packer, frame, aeb_active, stop_req, decel_g, warn_level=2, ttc=0.0, v_rel=0.0):
+  """
+  FCA11 (0x38D / 909) CAN 报文生成器
+  用于在遭遇前车急刹、红灯排队静止车、突发路面障碍物时直接下发物理制动与刹停指令至 ESC 底盘
+  """
+  fca11_values = {
+    "CR_FCA_Alive": frame % 0x10,
+    "PAINT1_Status": 1,
+    "FCA_DrvSetStatus": 1,
+    "FCA_Status": 2 if aeb_active else 1,
+    "FCA_CmdAct": 1 if aeb_active else 0,
+    "FCA_StopReq": 1 if stop_req else 0,
+    "CF_VSM_DecCmdAct": 1 if aeb_active else 0,
+    "CR_VSM_DecCmd": float(np.clip(decel_g, 0.0, 2.55)) if aeb_active else 0.0,
+    "CF_VSM_Warn": int(warn_level) if aeb_active else 0,
+    "CF_VSM_Prefill": 1 if aeb_active else 0,
+    "CF_VSM_HBACmd": 1 if aeb_active else 0,
+    "FCA_TimetoCollision": int(np.clip(ttc * 100, 0, 2540)),
+    "FCA_RelativeVelocity": float(np.clip(v_rel, -25.5, 25.5)),
+  }
+  fca11_dat = packer.make_can_msg("FCA11", 0, fca11_values)[1]
+  fca11_values["CR_FCA_ChkSum"] = hyundai_checksum(fca11_dat[:7])
+  return packer.make_can_msg("FCA11", 0, fca11_values)
 
 def create_acc_opt(packer, CP, escc):
   commands = []
