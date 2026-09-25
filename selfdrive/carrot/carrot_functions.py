@@ -242,7 +242,9 @@ class CarrotPlanner:
     startSign = model_v > 5.0 or model_v > (v[0] + 2)
 
     if v_ego_kph < 1.0:
-      stopSign = model_x < 20.0 and model_v < 10.0
+      # 정지중: model_v가 살아나면 stopSign을 풀어서 startSign(초록)이 잡히도록 함.
+      # 기존 10.0은 너무 높아서 초록불에도 stopSign이 계속 유지되어 출발하지 못함.
+      stopSign = model_x < 20.0 and model_v < 3.0
     elif v_ego_kph < 82.0:
       stopSign = (model_x < d_rel - 3.0 and
                   model_x < np.interp(v[0] * 3.6, [60, 80], [120.0, 150]) and
@@ -285,7 +287,7 @@ class CarrotPlanner:
     if sm.alive['carrotMan']:
       carrot_man = sm['carrotMan']
       atc_turn_left = carrot_man.atcType in ["turn left", "atc left"]
-      trigger_start = self.carrot_stat_stop = False
+      trigger_start = self.carrot_stay_stop = False
       if atc_turn_left or sm['carState'].leftBlinker:
         if self.trafficState_carrot == 1 and carrot_man.trafficState == 3: # red -> left triggered
           trigger_start = True
@@ -515,6 +517,13 @@ class CarrotPlanner:
       stop_dist = max(0, stop_dist + offset)
     #new
     stop_dist = max(stop_dist, v_ego ** 2 / (self.comfort_brake * 2))
+
+    # e2eStopped(신호대기 정지완료) 상태에서는 완전정지 유지.
+    # actual_stop_distance가 0으로 소진되면 stop_model_x(=xStop)가 다시 살아나
+    # 모델의 정지점을 계속 따라가며 조금씩 전진(크립)하는 문제가 있었음.
+    if self.xState == XState.e2eStopped and self.user_stop_distance < 0:
+      self.actual_stop_distance = 0.0
+      stop_dist = 0.0
 
     self.v_cruise = v_cruise
     self.stop_dist = stop_dist
