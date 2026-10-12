@@ -238,10 +238,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP): #new
     # No change cost when user is controlling the speed, or when standstill
     prev_accel_constraint = not (reset_state or sm['carState'].standstill)
 
+    steer_angle_without_offset = sm['carState'].steeringAngleDeg - sm['liveParameters'].angleOffsetDeg
     if self.mpc.mode == 'acc':
       #accel_limits = [A_CRUISE_MIN, get_max_accel(v_ego)]
       accel_limits = [A_CRUISE_MIN, carrot.get_carrot_accel(v_ego)]
-      steer_angle_without_offset = sm['carState'].steeringAngleDeg - sm['liveParameters'].angleOffsetDeg
       accel_limits_turns = limit_accel_in_turns(v_ego, steer_angle_without_offset, accel_limits, self.CP)
     else:
       accel_limits = [ACCEL_MIN, ACCEL_MAX]
@@ -271,11 +271,30 @@ class LongitudinalPlanner(LongitudinalPlannerSP): #new
 
     if force_slow_decel:
       v_cruise = 0.0
+
+    # ===== 移植自 cpv9-corolla：lead 抖动三件套 =====
+    has_lead = sm['radarState'].leadOne.status
+
+    # ① 无前车时限制巡航减速度下限，防止 lead 消失瞬间 MPC 残留大减速
+    if not has_lead:
+      accel_limits_turns[0] = max(accel_limits_turns[0], -0.15)
+
+    # ② lead 消失时把速度滤波器拉回当前车速，避免残留减速目标导致继续拖刹
+    if not has_lead and self.v_desired_filter.x < v_ego + 1.0:
+      self.v_desired_filter.x = v_ego
+
     # clip limits, cannot init MPC outside of bounds
     accel_limits_turns[0] = min(accel_limits_turns[0], self.a_desired + 0.05)
     accel_limits_turns[1] = max(accel_limits_turns[1], self.a_desired - 0.05)
 
-    self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality, jerk_factor = carrot.jerk_factor_apply)
+    # 移植自 cpv9-corolla：jerk_factor 与 carrot 解耦，仅按转向角调制，
+    # 避免 carrot.dynamic_t_follow 在贴近跟车时把 jerk_factor 压到 0.35 使减速起始过尖。
+    _jerk_factor = 1.5
+    if abs(steer_angle_without_offset) > 3.0:
+      _jerk_factor = 0.8 if abs(steer_angle_without_offset) > 25.0 else \
+        max(1.5 - 0.5 * (min(abs(steer_angle_without_offset), 15.0) / 15.0), 0.8)
+
+    self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality, jerk_factor=_jerk_factor)
     self.mpc.set_accel_limits(accel_limits_turns[0], accel_limits_turns[1])
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
     self.mpc.update(carrot, reset_state, sm['radarState'], v_cruise, x, v, a, j, personality=sm['selfdriveState'].personality)

@@ -37,12 +37,12 @@ X_EGO_OBSTACLE_COST = 3.
 X_EGO_COST = 0.
 V_EGO_COST = 0.
 A_EGO_COST = 0.
-J_EGO_COST = 5.0
+J_EGO_COST = 4.3
 A_CHANGE_COST = 250.
-A_CHANGE_COST_STARTING = 30.
+A_CHANGE_COST_STARTING = 23.
 DANGER_ZONE_COST = 100.
 CRASH_DISTANCE = .25
-LEAD_DANGER_FACTOR = 0.8 # 0.75
+LEAD_DANGER_FACTOR = 0.77 # 0.75
 LIMIT_COST = 1e6
 ACADOS_SOLVER_TYPE = 'SQP_RTI'
 
@@ -296,13 +296,16 @@ class LongitudinalMpc:
 
   def set_weights(self, prev_accel_constraint=True, personality=log.LongitudinalPersonality.standard, jerk_factor=1.0):
     #jerk_factor = get_jerk_factor(personality)
+    # 整体平顺优化（移植自 cpv9-corolla）：削弱 jerk/a_change 代价，减速起始更柔和
+    jerk_factor *= 0.78
     if self.mode == 'acc':
       a_change_cost = self.a_change_cost if prev_accel_constraint else A_CHANGE_COST_STARTING
-      cost_weights = [X_EGO_OBSTACLE_COST, X_EGO_COST, V_EGO_COST, A_EGO_COST, jerk_factor * a_change_cost, jerk_factor * J_EGO_COST]
+      cost_weights = [X_EGO_OBSTACLE_COST * 0.8, X_EGO_COST, V_EGO_COST * 1.2, A_EGO_COST,
+                      jerk_factor * a_change_cost, jerk_factor * J_EGO_COST * 0.68]
       constraint_cost_weights = [LIMIT_COST, LIMIT_COST, LIMIT_COST, DANGER_ZONE_COST]
     elif self.mode == 'blended':
-      a_change_cost = 40.0 if prev_accel_constraint else 0
-      cost_weights = [0., 0.1, 0.2, 5.0, a_change_cost, 1.0]
+      a_change_cost = 18.0 if prev_accel_constraint else 0
+      cost_weights = [0., 0.25, 0.35, 4.2, a_change_cost, 0.8]
       constraint_cost_weights = [LIMIT_COST, LIMIT_COST, LIMIT_COST, DANGER_ZONE_COST]
     else:
       raise NotImplementedError(f'Planner mode {self.mode} not recognized in planner cost set')
@@ -384,6 +387,15 @@ class LongitudinalMpc:
       stop_x = 1000.0
     else:
       v_cruise, stop_x, mode = carrot.v_cruise, carrot.stop_dist, carrot.mode
+      # 移植自 cpv9-corolla：巡航目标钳位到前车实际车速，避免 lead 与巡航障碍物来回拉扯。
+      # 注：cpv9 原在 planner 侧钳位，但 acc 模式下此处会用 carrot.v_cruise 覆盖传入参数导致其失效，
+      #     故按本仓库数据流移到这里生效；vRel 约定为 v_lead - v_ego（cpv9 原式 v_ego - vRel 符号相反，已修正）。
+      # 修复：只在目标速度高于前车时下行钳位；前车减速时（vRel<0）不降低 v_cruise，
+      #     减速交由 lead 障碍物约束响应（含前车加速度外推），否则会把减速责任转嫁给巡航钳位，削弱前车刹车响应。
+      if radarstate.leadOne.status:
+        lead_v = max(0.0, v_ego + float(radarstate.leadOne.vRel))
+        if lead_v < v_cruise and float(radarstate.leadOne.vRel) > -1.0:
+          v_cruise = lead_v
       desired_distance = desired_follow_distance(v_ego, lead_v_0, comfort_brake, stop_distance, t_follow)
       t_follow = carrot.dynamic_t_follow(t_follow, radarstate.leadOne, desired_distance, self.prev_a)
 

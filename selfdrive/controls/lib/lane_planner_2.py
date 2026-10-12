@@ -16,6 +16,12 @@ MAX_LANE_CENTERING_AWAY = 1.85
 KEEP_MIN_DISTANCE_FROM_LANE = 1.35
 KEEP_MIN_DISTANCE_FROM_EDGELANE = 1.15
 
+# ===================== 移植自 cpv9-corolla：两轮车/行人避让 =====================
+TWO_WHEEL_MAX_LONG_DIST = 25.0   # 两轮车/行人避让生效最大纵向距离(m)
+TWO_WHEEL_AVOID_SHIFT = 0.55     # 右侧近距两轮车/行人强制左偏量(m)
+TWO_WHEEL_SHIFT_ALPHA = 0.12     # 偏移平滑系数（一阶滤波）
+# ==============================================================================
+
 def clamp(num, min_value, max_value):
   # weird broken case, do something reasonable
   if min_value > num > max_value:
@@ -72,7 +78,35 @@ class LanePlanner:
     self.lanefull_mode = False
     self.d_prob_count = 0
 
+    # 移植自 cpv9-corolla：两轮车/行人独立避让状态
+    self.two_wheel_avoid_shift = 0.0       # 当前避让偏移(m, 负=向左)
+    self.two_wheel_avoid_shift_smooth = 0.0 # 平滑后的偏移
+
     self.params = Params()
+
+  def update_two_wheel_avoid(self, obstacle_list):
+    """计算两轮车/行人独立避让偏移（移植自 cpv9-corolla lane_planner_2.update_obstacle_data 的 tw 段）。
+    obstacle_list: [(d_long, d_lat, type_str), ...]，d_lat 正=右。
+    右侧同车道(-0.3~1.6m)的两轮车/行人 → 强制向左避让，偏移量随距离加权、限幅、一阶平滑。"""
+    _tw_shift = 0.0
+    for obs in obstacle_list:
+      try:
+        d_long, d_lat, o_type = obs
+      except Exception:
+        continue
+      if d_long > TWO_WHEEL_MAX_LONG_DIST or d_long < 0.5:
+        continue
+      if o_type not in ("motorcycle", "bicycle", "pedestrian"):
+        continue
+      # 右侧同车道（或贴边）的两轮车/行人 → 强制向左避让
+      if -0.3 < d_lat < 1.6:
+        dist_w = max(0.0, min(1.0, 1.0 - d_long / TWO_WHEEL_MAX_LONG_DIST))
+        _tw_shift = min(_tw_shift + TWO_WHEEL_AVOID_SHIFT * dist_w, TWO_WHEEL_AVOID_SHIFT)
+    self.two_wheel_avoid_shift = _tw_shift
+    # 一阶平滑，避免路径偏移跳变
+    alpha = TWO_WHEEL_SHIFT_ALPHA
+    self.two_wheel_avoid_shift_smooth = alpha * self.two_wheel_avoid_shift + \
+      (1.0 - alpha) * self.two_wheel_avoid_shift_smooth
 
   def parse_model(self, md):
 
@@ -248,6 +282,10 @@ class LanePlanner:
 
 
     path_xyz[:, 1] += (CAMERA_OFFSET + self.lane_offset_filtered.x)
+
+    # 移植自 cpv9-corolla：两轮车/行人独立避让偏移（加在 LaneOffset 之后，不被其抵消）
+    if self.two_wheel_avoid_shift_smooth > 0.01:
+      path_xyz[:, 1] -= self.two_wheel_avoid_shift_smooth  # 向左避让
 
     self.offset_total = self.lane_offset_filtered.x
 

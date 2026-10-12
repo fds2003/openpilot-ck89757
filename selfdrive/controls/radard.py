@@ -64,8 +64,14 @@ class Track:
     if ready:
       self.d_path(md) #self.yRel + np.interp(self.dRel, md.position.x, md.position.y)
 
+    # aLeadTau 是 MPC 外推的衰减时间常数：tau 越小，MPC 越倾向认为前车保持当前减速度。
+    # 原逻辑减速/加速同门槛 0.5，刹车初期(-0.2~-0.5)外推衰减过快 → 前车刹车响应迟钝。
+    # 修复：减速方向用更低门槛并立即收紧 tau（按持续减速外推）。
     a_lead_threshold = 0.5 * radar_reaction_factor
-    if abs(self.aLead) < a_lead_threshold and abs(self.jLead) < 0.5:
+    decel_threshold = 0.15 * radar_reaction_factor
+    if self.aLead < -decel_threshold:
+      self.aLeadTau.x = min(self.aLeadTau.x, 0.3)
+    elif abs(self.aLead) < a_lead_threshold and abs(self.jLead) < 0.5:
       self.aLeadTau.x = _LEAD_ACCEL_TAU * radar_reaction_factor
     else:
       self.aLeadTau.update(0.0)
@@ -260,7 +266,7 @@ class VisionTrack:
     self.dRel_last = 0.0
     self.vLead_last = 0.0
     self.alpha = 0.02
-    self.alpha_a = 0.02
+    self.alpha_a = 0.06 #0.02 减速度估计提速（原0.02约0.5s时间常数，前车刹车感知太慢）
 
     self.vLat = 0.0
 
@@ -330,9 +336,11 @@ class VisionTrack:
         #self.vRel = (lead_v_rel_pred + v_rel) / 2
         self.vLead = float(v_ego + self.vRel)
 
-        a_lead = (self.vLead - self.vLead_last) / self.radar_ts * 0.2 #0.5 -> 0.2 vel 미분적용을 줄임.
+        a_lead = (self.vLead - self.vLead_last) / self.radar_ts * 0.5 #0.5 -> 0.2 前车减速感知提速（原0.2抑制过多，导致前车刹车响应迟钝）
         self.aLead = self.aLead * (1. - self.alpha_a) + a_lead * self.alpha_a
-        if abs(a_lead_vision) > abs(self.aLead): # or self.mixRadarInfo == 3:
+        # 前车减速方向优先采信视觉：视觉报告的减速度显著强于当前估计时直接采信，
+        # 修复"前车急刹反应迟钝、逼近后才急刹"的问题
+        if a_lead_vision < self.aLead - 0.3 or abs(a_lead_vision) > abs(self.aLead):
           self.aLead = a_lead_vision
 
         vLat_alpha = 0.002
@@ -353,12 +361,14 @@ class VisionTrack:
     self.dRel_last = self.dRel
     self.vLead_last = self.vLead
 
-    # Learn if constant acceleration
-    #aLeadTauValue = self.aLeadTauPos if self.aLead > self.aLeadTauThreshold else self.aLeadTauNeg
-    if abs(self.aLead) < 0.3: #self.aLeadTauThreshold:
-      self.aLeadTau = 0.2 #aLeadTauValue
+    # aLeadTau：MPC 外推衰减常数。原逻辑 |aLead|<0.3 时 tau=0.2（快速衰减外推），
+    # 减速方向需要相反处理：tau 大 → MPC 按"持续减速"外推 → 及早减速。
+    # 修复：减速方向放大 tau 并放宽门槛，让前车刹车被 MPC 持续外推而非衰减掉。
+    if self.aLead < -0.15:
+      self.aLeadTau = max(self.aLeadTau * 1.05, 2.0) # 减速：按持续减速外推（tau大）
+    elif abs(self.aLead) < 0.3:
+      self.aLeadTau = 0.2
     else:
-      #self.aLeadTau = min(self.aLeadTau * 0.9, aLeadTauValue)
       self.aLeadTau *= 0.9
 
 class RadarD:
@@ -387,6 +397,10 @@ class RadarD:
     self.radar_detected = False
     #new
     self.sideRadarMinDist = self.params.get_float("SideRadarMinDist") * 0.1
+
+    # 移植自 cpv9-corolla：天桥/龙门架/ETC门架检测状态
+    # 特征：静止 + 车道中心 + 距离几乎不变 + 持续多帧
+    self._overpass_tracker = {}  # track_id -> {first_dRel, last_dRel, stable_count, total_frames}
 
 
   def update(self, sm: messaging.SubMaster, rr: car.RadarData):
@@ -420,6 +434,9 @@ class RadarD:
     for tid in list(self.tracks.keys()):
       if tid not in valid_ids:
         self.tracks.pop(tid)
+        # 移植自 cpv9-corolla：清理天桥追踪器
+        if tid in self._overpass_tracker:
+          del self._overpass_tracker[tid]
 
     # *** publish radarState ***
     self.radar_state_valid = sm.all_checks()
@@ -465,6 +482,74 @@ class RadarD:
     radar_msg.radarState = self.radar_state
     pm.send("radarState", radar_msg)
 
+  # ============================================================
+  # 移植自 cpv9-corolla：天桥/龙门架/ETC门架 检测
+  # 特征：静止 + 车道中心 + 距离几乎不变 + 持续多帧
+  # ============================================================
+  def _update_overpass_tracker(self, track):
+    """更新天桥检测状态，返回 True 表示确认是天桥"""
+    tid = track.identifier
+    drel = track.dRel
+    vrel = track.vLead
+    yrel = track.yRel
+
+    # 基本特征检查
+    is_stationary = abs(vrel) < 1.0
+    is_centered = abs(yrel) < 1.5
+    is_mid_range = 10 < drel < 80
+
+    if not (is_stationary and is_centered and is_mid_range):
+      # 不符合天桥特征，清除追踪
+      if tid in self._overpass_tracker:
+        del self._overpass_tracker[tid]
+      return False
+
+    # 符合基本特征，开始/继续追踪
+    if tid not in self._overpass_tracker:
+      self._overpass_tracker[tid] = {
+        'first_dRel': drel,
+        'last_dRel': drel,
+        'stable_count': 0,
+        'total_frames': 0,
+      }
+
+    info = self._overpass_tracker[tid]
+    info['total_frames'] += 1
+
+    # 距离变化小于 0.5m → 稳定
+    drel_change = abs(drel - info['last_dRel'])
+    if drel_change < 0.5:
+      info['stable_count'] += 1
+    else:
+      info['stable_count'] = 0
+    info['last_dRel'] = drel
+
+    # 连续5帧以上距离几乎不变 → 确认天桥
+    confirmed = (info['stable_count'] >= 5)
+    if confirmed:
+      cloudlog.warning(f"[RADAR-OVERPASS] 确认天桥 track_id={tid} dRel={drel:.1f}m vRel={vrel:.1f} yRel={yrel:.1f}")
+
+    return confirmed
+
+  def _is_overpass(self, track) -> bool:
+    """综合判断是否为天桥/龙门架"""
+    # 先更新追踪器
+    if self._update_overpass_tracker(track):
+      return True
+
+    # 快速判断：静止 + 车道中心 + 中远距离 → 高概率天桥
+    if (abs(track.vLead) < 1.0
+        and abs(track.yRel) < 1.5
+        and 10 < track.dRel < 80):
+      # 检查是否已经在追踪中且稳定
+      tid = track.identifier
+      if tid in self._overpass_tracker:
+        info = self._overpass_tracker[tid]
+        if info['stable_count'] >= 3:
+          return True
+      return False
+    return False
+
   def get_lead(self, CS, md, tracks: dict[int, Track], index: int, lead_msg: capnp._DynamicStructReader,
                model_v_ego: float, low_speed_override: bool = True) -> dict[str, Any]:
 
@@ -483,11 +568,19 @@ class RadarD:
     else:
       track = None
 
+    # ===== 移植自 cpv9-corolla：天桥/龙门架过滤（主 track）=====
+    if track is not None:
+      if self._is_overpass(track):
+        cloudlog.warning(f"[RADAR-OVERPASS] 主track过滤 dRel={track.dRel:.1f} vRel={track.vLead:.1f}")
+        track = None
+
     if (track is None or lead_msg.prob < .6) and track_scc is not None and track_scc.cnt > 2:
       #if self.enable_radar_tracks in [-1, 2] or model_v_ego < 5 or track_scc.vLead < 5.0:
       #if self.enable_radar_tracks in [-1, 2] or track_scc.vLead < 5.0:
       if self.enable_radar_tracks in [-1, 2]:
-        track = track_scc
+        # 天桥过滤也适用于 track_scc
+        if not self._is_overpass(track_scc):
+          track = track_scc
 
     lead_dict = {'status': False}
     radar = False
@@ -527,6 +620,11 @@ class RadarD:
     left_list, right_list, center_list, cutin_list = [], [], [], []
     for c in tracks.values():
       y_rel_neg = - c.yRel
+
+      # 移植自 cpv9-corolla：天桥过滤：不进任何列表
+      if self._is_overpass(c):
+        continue
+
       # center
       if c.in_lane_prob > 0.1:
         if c.cnt > 3:
@@ -622,26 +720,32 @@ class RadarD:
     chosen = None
     detected = self.radar_detected
 
+    # 移植自 cpv9-corolla：天桥过滤辅助函数
+    def _is_overpass_dict(ld):
+      return abs(ld.get('vLead', 0)) < 1.0 and abs(ld.get('dPath', 0)) < 1.5 and 10 < ld.get('dRel', 0) < 80
+
     if self.leadCutIn and self.leadCutIn.get("status") and self.detect_cut_in:
-      if self.radar_state.leadOne.status:
-        if self.leadCutIn["dRel"] < self.radar_state.leadOne.dRel:
+      if not _is_overpass_dict(self.leadCutIn):
+        if self.radar_state.leadOne.status:
+          if self.leadCutIn["dRel"] < self.radar_state.leadOne.dRel:
+            chosen = self.leadCutIn
+            chosen["modelProb"] = 0.03
+            detected = True
+        else:
           chosen = self.leadCutIn
           chosen["modelProb"] = 0.03
           detected = True
-      else:
-        chosen = self.leadCutIn
-        chosen["modelProb"] = 0.03
-        detected = True
 
     elif self.leadCenter and self.leadCenter["status"]:
-      if self.radar_detected:
-        if self.radar_state.leadOne.status and self.leadCenter["dRel"] < self.radar_state.leadOne.dRel:
+      if not _is_overpass_dict(self.leadCenter):
+        if self.radar_detected:
+          if self.radar_state.leadOne.status and self.leadCenter["dRel"] < self.radar_state.leadOne.dRel:
+            chosen = self.leadCenter
+            chosen["modelProb"] = 0.01
+        else:
           chosen = self.leadCenter
-          chosen["modelProb"] = 0.01
-      else:
-        chosen = self.leadCenter
-        chosen["modelProb"] = 0.02
-        detected = True
+          chosen["modelProb"] = 0.02
+          detected = True
 
     if chosen is not None:
         self.radar_state.leadOne = chosen

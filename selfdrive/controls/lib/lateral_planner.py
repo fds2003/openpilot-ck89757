@@ -143,6 +143,40 @@ class LateralPlanner:
     self.LP.lane_width_left = md.meta.laneWidthLeft
     self.LP.lane_width_right = md.meta.laneWidthRight
     self.LP.curvature = measured_curvature
+
+    # ===== 移植自 cpv9-corolla：从 radarState 组装障碍物列表，喂给两轮车/行人避让 =====
+    # 数据源：leadOne(前向) + leadLeft/leadRight(侧向)，低速近距离目标按 vLead 推断类型：
+    #   vLead<1.5 → pedestrian；1.5~5 → bicycle/motorcycle（都触发左偏避让）
+    # 仅在本车 10~60km/h 时启用（高速不避让，避免高速变道风险）
+    try:
+      rs = sm['radarState']
+      v_ego_kph = self.v_ego * 3.6
+      obs_list = []
+      if 10.0 < v_ego_kph < 60.0:
+        def _mk_obs(lead, fallback_type):
+          if not lead.status:
+            return None
+          d = float(lead.dRel)
+          y = float(lead.yRel) if lead.yRel != 0.0 else float(getattr(lead, 'dPath', 0.0))
+          v = float(lead.vLead)
+          if d > 25.0 or d < 0.5:
+            return None
+          if v < 1.5:
+            o_type = 'pedestrian'
+          elif v < 5.0:
+            o_type = fallback_type
+          else:
+            return None   # 正常行驶的机动车，不避让
+          return (d, y, o_type)
+        for lead_src, fb in ((rs.leadOne, 'bicycle'), (rs.leadLeft, 'bicycle'), (rs.leadRight, 'bicycle')):
+          o = _mk_obs(lead_src, fb)
+          if o is not None:
+            obs_list.append(o)
+      self.LP.update_two_wheel_avoid(obs_list)
+    except Exception:
+      pass
+    # ===============================================================================
+
     self.path_xyz, self.lanelines_active = self.LP.get_d_path(sm['carState'], self.v_ego, self.t_idxs, self.path_xyz, self.curve_speed)
 
     #if self.LP.lanefull_mode:
