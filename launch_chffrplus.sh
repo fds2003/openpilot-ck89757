@@ -2,6 +2,15 @@
 
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null && pwd )"
 
+# ===== 时区兜底（2026-10-12）：/data/etc/localtime 为空/缺失时默认 Asia/Shanghai =====
+# 手机 carrot App 同步时区成功后 set_time() 会自动重建链接，与本兜底不冲突
+if [ ! -s /data/etc/localtime ]; then
+  sudo rm -f /data/etc/localtime
+  sudo ln -sf /usr/share/zoneinfo/Asia/Shanghai /data/etc/localtime
+  echo "Timezone fallback applied: Asia/Shanghai"
+fi
+# ====================================================================================
+
 source "$DIR/launch_env.sh"
 
 function agnos_init {
