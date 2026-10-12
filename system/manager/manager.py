@@ -296,6 +296,14 @@ def manager_init() -> None:
   except PermissionError:
     print(f"WARNING: failed to make {Paths.shm_path()}")
 
+  # 移植自 cpv9-corolla：清空残留的 cereal/openpilot shm 段与 POSIX 信号量
+  # 解决"改代码重启后 controlsd/modeld 读到旧 shm → MPC 首次求解异常 → Lateral/Steering Fault"竞态
+  try:
+    from manager_shm_patch import cleanup_shared_memory_on_start
+    cleanup_shared_memory_on_start()
+  except Exception as e:
+    print(f"WARNING: shm cleanup skipped: {e}")
+
   # set params
   serial = HARDWARE.get_serial()
   params.put("Version", build_metadata.openpilot.version)

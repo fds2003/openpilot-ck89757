@@ -109,6 +109,18 @@ class LateralPlanner:
       car_speed = np.linalg.norm(self.velocity_xyz, axis=1) - get_speed_error(md, v_ego_car)
       self.v_plan = np.clip(car_speed, MIN_SPEED, np.inf)
       self.v_ego = self.v_plan[0]
+
+      # ===== 移植自 cpv9-corolla：高速弯道平滑减速（每帧限步长，杜绝弯道瞬间降速点刹）=====
+      # 判据：模型路径末端速度显著低于当前（模型请求减速）或实测曲率超过弯道阈值
+      _is_cornering = abs(measured_curvature) > 0.0010
+      if _is_cornering and self.v_ego > 12.0 / 3.6:
+        _V_DECEL_STEP = 2.0 / 3.6  # 每帧(0.05s)最多降 2km/h
+        _max_drop = _V_DECEL_STEP * self.v_ego
+        if self.v_ego > self.v_plan[-1]:
+          self.v_ego = max(self.v_ego - _max_drop, self.v_plan[-1])
+          self.v_plan[0] = self.v_ego
+      # ================================================================================
+
       self.plan_a = np.array(md.acceleration.x)
       if md.velocity.x[-1] < md.velocity.x[0] * 0.7:  # TODO: 모델이 감속을 요청하는 경우 속도테이블이 레인모드를 할수 없음. 속도테이블을 새로 만들어야함..
         self.lanemode_possible_count = 0

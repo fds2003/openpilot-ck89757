@@ -20,7 +20,11 @@ KEEP_MIN_DISTANCE_FROM_EDGELANE = 1.15
 TWO_WHEEL_MAX_LONG_DIST = 25.0   # 两轮车/行人避让生效最大纵向距离(m)
 TWO_WHEEL_AVOID_SHIFT = 0.55     # 右侧近距两轮车/行人强制左偏量(m)
 TWO_WHEEL_SHIFT_ALPHA = 0.12     # 偏移平滑系数（一阶滤波）
-# ==============================================================================
+
+# ===== 移植自 cpv9-corolla：偏离对向/路肩修正参数 =====
+DEVIATION_NORM_THRESH = 0.82     # 归一化横向偏离阈值(|pos|/半车道宽)
+DEVIATION_CORRECT_STEP = 0.22    # 偏离时每帧拉回量(m)
+# ====================================================================
 
 def clamp(num, min_value, max_value):
   # weird broken case, do something reasonable
@@ -282,6 +286,21 @@ class LanePlanner:
 
 
     path_xyz[:, 1] += (CAMERA_OFFSET + self.lane_offset_filtered.x)
+
+    # ===== 移植自 cpv9-corolla：偏离对向车道/路肩检测 + 逐帧修正 =====
+    # 车辆偏离出车道中心超过 82% 半宽（快压线/骑线）且有对应车道线置信时，每帧拉回 22cm
+    _lane_w = max(self.lane_width, 2.6)
+    _y0 = float(path_xyz[0, 1])
+    _norm_pos = _y0 / (_lane_w / 2.0)
+    _norm_pos = max(-2.0, min(2.0, _norm_pos))
+    _corr = 0.0
+    if _norm_pos < -DEVIATION_NORM_THRESH and self.lll_prob > 0.30:
+      _corr = DEVIATION_CORRECT_STEP   # 偏向对向车道 → 每帧右拉回
+    elif _norm_pos > DEVIATION_NORM_THRESH and self.rll_prob > 0.30:
+      _corr = -DEVIATION_CORRECT_STEP  # 偏向路肩 → 每帧左拉回
+    if _corr != 0.0:
+      path_xyz[:, 1] += _corr
+    # ================================================================
 
     # 移植自 cpv9-corolla：两轮车/行人独立避让偏移（加在 LaneOffset 之后，不被其抵消）
     if self.two_wheel_avoid_shift_smooth > 0.01:

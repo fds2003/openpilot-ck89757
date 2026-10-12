@@ -1326,9 +1326,29 @@ class CarrotServ:
       hda_active = True
 
     #print(f"sdi_speed: {sdi_speed}, hda_active: {hda_active}, xSpdType: {self.xSpdType}, xSpdDist: {self.xSpdDist}, active_carrot: {self.active_carrot}, v_ego_kph: {v_ego_kph}, nRoadLimitSpeed: {self.nRoadLimitSpeed}")
+
+    # ===== 移植自 cpv9-corolla ①：绿灯时立刻清摄像头限速，避免绿灯拖刹 =====
+    if self.traffic_state == 2 and self.xSpdType in [100, 101]:
+      self.xSpdType = -1
+      self.xSpdDist = self.xSpdLimit = 0
+    elif self.xSpdType < 0 or (self.xSpdType not in [100,101] and self.xSpdDist <= 0) or (self.xSpdType in [100,101] and self.xSpdDist < -30):
+      self.xSpdType = -1
+      self.xSpdDist = self.xSpdLimit = 0
+    # 远处事件过滤：150m 外的摄像头/事件不触发减速（减速带和区间测速除外）
+    if self.xSpdDist > 150 and self.xSpdType not in [22, 4]:
+      self.xSpdType = -1
+      self.xSpdDist = self.xSpdLimit = 0
+    # =====================================================================
+
     ### TBT速度控制 self.atcSpeed, self.atcDist这两个变量均未用上
     atc_desired, self.atcType, self.atcSpeed, self.atcDist, atc_speed_up = self.update_auto_turn(v_ego*3.6, sm, self.xTurnInfo, self.xDistToTurn, True)
+    # ===== 移植自 cpv9-corolla ②：绿灯直行时，忽略转弯减速误判 =====
+    if self.traffic_state == 2 and self.xTurnInfo in [1, 2]:
+      atc_desired = 250
+      atc_speed_up = 0
     atc_desired_next, _, _, _, _ = self.update_auto_turn(v_ego*3.6, sm, self.xTurnInfoNext, self.xDistToTurnNext, False)
+    if self.traffic_state == 2 and self.xTurnInfo in [1, 2]:
+      atc_desired_next = 250
 
     if self.nSdiType  >= 0: # or self.active_carrot > 0:
       pass
@@ -1366,24 +1386,52 @@ class CarrotServ:
       and self.autoSpeedUptoRoadSpeedLimit > 0 and not cs_speed_limit):          # 未设置巡航速度跟随道路限速/无车辆自带限速时，把巡航速度作为道路限速
       self.nRoadLimitSpeed = v_cruise_kph
 
-    speed_n_sources = [
-      (atc_desired, "atc"),
-      (atc_desired_next, "atc2"),
-      (sdi_speed, "hda" if hda_active else "bump" if self.xSpdType == 22 else "section" if self.xSpdType == 4 else "police" if self.xSpdType == 100 else "waze" if self.xSpdType == 101 else "cam"),
-      (limit_speed, "road"),
-    ]
-    if self.turnSpeedControlMode in [1,2]: #模式1和2均有视觉转弯控速,autoCurveSpeedLowerLimit为用户设置的最小转弯速度，vturn_speed这视觉计算的限速
-      speed_n_sources.append((max(abs(vturn_speed), self.autoCurveSpeedLowerLimit), "vturn"))
+    # ===== 移植自 cpv9-corolla ③：高速直行无事件时，只信道路限速，屏蔽所有辅助源下拉 =====
+    is_highway = (self.roadcate <= 1)
+    is_straight = (self.xTurnInfo not in [1, 2, 3, 4, 5, 7])
+    no_event = (self.xSpdType < 0) and (self.traffic_state != 1)
+    is_fast = v_ego_kph >= 90
+    pure_highway_cruise = is_highway and is_straight and no_event and is_fast
 
-    route_speed = max(route_speed * self.mapTurnSpeedFactor, self.autoCurveSpeedLowerLimit)
-    if self.turnSpeedControlMode == 2:
-      if -500 < self.xDistToTurn < 500:
+    if pure_highway_cruise:
+      speed_n_sources = [
+        (limit_speed, "road"),
+      ]
+    else:
+      speed_n_sources = [
+        (atc_desired, "atc"),
+        (atc_desired_next, "atc2"),
+        (sdi_speed, "hda" if hda_active else "bump" if self.xSpdType == 22 else "section" if self.xSpdType == 4 else "police" if self.xSpdType == 100 else "waze" if self.xSpdType == 101 else "cam"),
+        (limit_speed, "road"),
+      ]
+      if self.turnSpeedControlMode in [1,2]: #模式1和2均有视觉转弯控速,autoCurveSpeedLowerLimit为用户设置的最小转弯速度，vturn_speed这视觉计算的限速
+        speed_n_sources.append((max(abs(vturn_speed), self.autoCurveSpeedLowerLimit), "vturn"))
+
+      route_speed = max(route_speed * self.mapTurnSpeedFactor, self.autoCurveSpeedLowerLimit)
+      if self.turnSpeedControlMode == 2:
+        if -500 < self.xDistToTurn < 500:
+          speed_n_sources.append((route_speed, "route"))
+      elif self.turnSpeedControlMode == 3:
         speed_n_sources.append((route_speed, "route"))
-    elif self.turnSpeedControlMode == 3:
-      speed_n_sources.append((route_speed, "route"))
-      #speed_n_sources.append((self.calculate_current_speed(dist, speed * self.mapTurnSpeedFactor, 0, 1.2), "route"))
+        #speed_n_sources.append((self.calculate_current_speed(dist, speed * self.mapTurnSpeedFactor, 0, 1.2), "route"))
 
     desired_speed, source = min(speed_n_sources, key=lambda x: x[0])
+
+    # ===== 移植自 cpv9-corolla ④：绿灯时 desired_speed 不低于当前车速 90%，防止点刹 =====
+    if self.traffic_state == 2:
+      _min_keep = int(v_ego_kph * 0.9)
+      if desired_speed < _min_keep and v_ego_kph > 10:
+        desired_speed = _min_keep
+        source = "green_keep"
+    # ===== 移植自 cpv9-corolla ⑤：高速平滑兜底，每帧最多降 2km/h，杜绝瞬间点刹 =====
+    if not hasattr(self, '_last_desired_speed'):
+      self._last_desired_speed = desired_speed
+    if v_ego_kph >= 90:
+      _max_drop = 2  # 每帧(0.1s)最多降2km/h
+      if desired_speed < self._last_desired_speed - _max_drop:
+        desired_speed = self._last_desired_speed - _max_drop
+        source = "smooth"
+    self._last_desired_speed = desired_speed
 
     if CS is not None:
       if source != self.source_last:
