@@ -1241,10 +1241,19 @@ class DesireHelper:
         # fade out over .5s
         self.lane_change_ll_prob = max(self.lane_change_ll_prob - 2 * DT_MDL, 0.0)
 
+        # 变道执行期持续复检后车时距 (fail-safe: 时距不足立即中止并报警)
+        _alive = self.sm.alive['amapNavi']
+        _ttc = amapNavi.lidarBehindVdistTime if _alive else 0.0
+        _thr = {0: 1.8, 1: 2.5, 2: 3.5}.get(getattr(amapNavi, 'overtakeMode', 1), 2.5)
+        if (0.0 < _ttc < _thr) and self.lane_change_ll_prob > 0.3:
+          self.lane_change_state = LaneChangeState.off
+          self.lane_change_direction = LaneChangeDirection.none
+          self.trigger_name = "rear ttc abort"
+          self.lane_change_audio(True, 6, 0)
+
         # 98% certainty
         if lane_change_prob < 0.02 and self.lane_change_ll_prob < 0.01:
           self.lane_change_state = LaneChangeState.laneChangeFinishing
-
         if (self.showDebugLog & 4) > 0 or self.lane_change_state_last != self.lane_change_state:
           print(f"---{'[' + time.strftime('%H:%M:%S') + ']' if self.lane_change_state_last != self.lane_change_state else ''}Starting: ll_prob={self.lane_change_ll_prob:.1f},prob={lane_change_prob:.1f};trig:name={self.trigger_name},type={self.trigger_type}")
 
@@ -1345,11 +1354,11 @@ class DesireHelper:
         self.atc_cancel = True
         self.atc_cancel_delay = int(2.0 / DT_MDL)
         print(f"---set atc_cancel=true, delay={self.atc_cancel_delay}")
-        #self.lane_change_audio(True, 4, 0) #播报领航已退出
+        self.lane_change_audio(True, 4, 0) # 立即播报领航已退出
     elif steering_pressed and self.atc_cancel:
       self.atc_cancel_delay = int(2.0/DT_MDL)
 
-    self.atc_cancel_delay = min(-1, self.atc_cancel_delay - 1)
+    self.atc_cancel_delay = max(-1, self.atc_cancel_delay - 1)
     if self.atc_cancel_delay == 0:
       #有用户干预退出标志并且当前仍是LaneChangeState.off状态时，播报领航已退出语音
       if self.atc_cancel:

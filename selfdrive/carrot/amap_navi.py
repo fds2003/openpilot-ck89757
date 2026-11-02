@@ -197,8 +197,8 @@ class AmapNaviServ:
     self.listen_port = 4211 #监听地址
     self.lane_remote_port = 4212
     self.lane_port = 4213  # 监听地址
-    self.navi_port = 7705        # 车机 PORT_TELEMETRY：遥测收端口
-    self.navi_remote_port = 7706  # 车机 PORT_CONTROL：指令发往 C3 的端口
+    self.navi_port = 7706        # C3 遥测【发送】目标 = 车机 PORT_TELEMETRY (7706)
+    self.navi_remote_port = 7705  # C3 指令【接收】监听端口 = 车机 PORT_CONTROL (7705)
     self.local_ip_address = "0.0.0.0" #本地ip地址
 
     self.clients = {}  # 保存多个客户端
@@ -614,13 +614,20 @@ class AmapNaviServ:
               "device_type": "navi",
               "port": self.broadcast_port,
             })
+          c3_ip = ""
+          try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s_tmp:
+              s_tmp.connect((ip, 80))
+              c3_ip = s_tmp.getsockname()[0]
+          except Exception:
+            c3_ip = ""
           resp = json.dumps({
             "resp": "c3_pong",
             "device": "comma3",
             "status": "ready",
             "device_id": "c3",
             "auth": True,
-            "ip": ip,
+            "ip": c3_ip,
             "version": "openpilot-cp-custo"
           }).encode('utf-8')
           s.sendto(resp, (ip, addr[1]))
@@ -1156,7 +1163,7 @@ class AmapNaviServ:
                                                                     self.min_front_vrel_vego_time, self.min_front_drel_vego_time)
               if lidar_id == 0 or lidar_id == 2:
                 # 计算左后方速度
-                self.shared_data.lb_vrel = self.leftFrontTarget.update(lb_dreltmp, dist_timems)
+                self.shared_data.lb_vrel = self.leftBehindTarget.update(lb_dreltmp, dist_timems)
                 #动态时距盲区判断
                 self.lb_object_detected = self.is_side_object_risky(lb_dreltmp, self.shared_data.lb_vrel, self.shared_data.v_ego_m,
                                                                     self.min_behind_vrel_vego_time, self.min_behind_drel_vego_time)
