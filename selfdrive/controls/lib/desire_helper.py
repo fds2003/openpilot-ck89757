@@ -919,9 +919,10 @@ class DesireHelper:
 
     if self.carrot_lane_change_count > 0: #些计数为carrorMan发送过来的LANECHANGE触发的变道
       auto_lane_change_blocked = False
-      # 读取高德车机协同超车模式与后方激光雷达时距 (TTC)
-      overtake_mode = getattr(amapNavi, 'overtakeMode', 1)
-      behind_ttc = getattr(amapNavi, 'lidarBehindVdistTime', 99.0)
+      # capnp 字段始终存在，getattr 的 default 永不生效；缺失消息返回 0/0.0
+      amap_alive = self.sm.alive['amapNavi']
+      overtake_mode = amapNavi.overtakeMode if amap_alive and amapNavi.overtakeMode in (0, 1, 2) else 1
+      behind_ttc = amapNavi.lidarBehindVdistTime if amap_alive else 0.0
       if overtake_mode == 0:
         ttc_threshold = 1.8 # 激进模式
       elif overtake_mode == 2:
@@ -929,7 +930,8 @@ class DesireHelper:
       else:
         ttc_threshold = 2.5 # 常规模式 (默认)
 
-      rear_conflict = (0.0 < behind_ttc < ttc_threshold)
+      # 无效(<=0)、缺失(0.0)、以及 TTC 小于门限，一律阻断 —— fail-safe 而非 fail-open
+      rear_conflict = (behind_ttc <= 0.0) or (behind_ttc < ttc_threshold)
       if rear_conflict:
         auto_lane_change_trigger = False
         auto_lane_change_trigger_no_bsd = False
@@ -1332,9 +1334,8 @@ class DesireHelper:
 
     self.prev_desire_enabled = desire_enabled
 
-    #驾驶员往反方向打了方向盘后，自动变道状态机变为Off
-    steering_pressed = carstate.steeringPressed and \
-                     ((carstate.steeringTorque < 0 and blinker_state == BLINKER_LEFT) or (carstate.steeringTorque > 0 and blinker_state == BLINKER_RIGHT))
+    # 任何方向的人工介入都在同一帧无条件退出变道（20Hz -> 最坏 50ms）
+    steering_pressed = carstate.steeringPressed
     if steering_pressed and self.lane_change_state != LaneChangeState.off:
       self.lane_change_direction = LaneChangeDirection.none
       self.lane_change_state = LaneChangeState.off

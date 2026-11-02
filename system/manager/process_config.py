@@ -141,7 +141,7 @@ procs = [
   PythonProcess("fleet_manager", "selfdrive.frogpilot.fleetmanager.fleet_manager", check_fleet),
   PythonProcess("carrot_man", "selfdrive.carrot.carrot_man", always_run),#, enabled=not PC),
   #PythonProcess("auto_overtake", "selfdrive.carrot.auto_overtake", always_run),#, enabled=not PC),
-  PythonProcess("amap_navi", "selfdrive.carrot.amap_navi", always_run),
+  #PythonProcess("amap_navi", "selfdrive.carrot.amap_navi", always_run),  # 由 carrot_man 内嵌实例独占 UDP，避免双实例端口竞争
   #PythonProcess("lane", "selfdrive.carrot.lane", check_lane and only_onroad),
   PythonProcess("lane", "selfdrive.carrot.lane", only_onroad),
 ]

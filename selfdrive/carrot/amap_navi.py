@@ -144,7 +144,7 @@ class SharedData:
     self.remote_cmd = ""
     self.remote_arg = ""
     self.overtake_mode = 1 # 0:激进, 1:常规, 2:保守
-    self.behind_ttc = 99.0 # 后方逼近时距
+    self.behind_ttc = 0.0 # 后方时距；0.0 = 无效/缺失哨兵，desire_helper 一律阻断变道
     self.app_ip = None # 车机IP
     self.ext_blinker = BLINKER_NONE # 外挂控制器转向灯状态
     self.ext_state = 0  # 外挂控制器的数量
@@ -197,8 +197,8 @@ class AmapNaviServ:
     self.listen_port = 4211 #监听地址
     self.lane_remote_port = 4212
     self.lane_port = 4213  # 监听地址
-    self.navi_port = 7706
-    self.navi_remote_port = 7705
+    self.navi_port = 7705        # 车机 PORT_TELEMETRY：遥测收端口
+    self.navi_remote_port = 7706  # 车机 PORT_CONTROL：指令发往 C3 的端口
     self.local_ip_address = "0.0.0.0" #本地ip地址
 
     self.clients = {}  # 保存多个客户端
@@ -291,12 +291,15 @@ class AmapNaviServ:
     msg.amapNavi.lbDrel = 0 if (self.shared_data.main_lb_drel is None) else int(round(self.shared_data.main_lb_drel/100))
     msg.amapNavi.rfDrel = 0 if (self.shared_data.main_rf_drel is None) else int(round(self.shared_data.main_rf_drel/100))
     msg.amapNavi.rbDrel = 0 if (self.shared_data.main_rb_drel is None) else int(round(self.shared_data.main_rb_drel/100))
-    msg.amapNavi.overtakeMode = getattr(self.shared_data, "overtake_mode", 1)
-    ttc = 99.0
-    if self.shared_data.lb_vrel and self.shared_data.lb_vrel < -0.1 and self.shared_data.main_lb_drel:
-      ttc = (self.shared_data.main_lb_drel / 1000.0) / abs(self.shared_data.lb_vrel)
-    elif self.shared_data.rb_vrel and self.shared_data.rb_vrel < -0.1 and self.shared_data.main_rb_drel:
-      ttc = (self.shared_data.main_rb_drel / 1000.0) / abs(self.shared_data.rb_vrel)
+    msg.amapNavi.overtakeMode = self.shared_data.overtake_mode
+    # 两侧后向雷达都参与，取最小 TTC（最保守）；无效/缺失/远离 -> 99.0 表示安全
+    ttc_list = []
+    for side in ("lb", "rb"):
+      d = getattr(self.shared_data, f"main_{side}_drel", None)
+      v = getattr(self.shared_data, f"{side}_vrel", None)
+      if d is not None and abs(d) > 0 and v is not None and v < -0.1:
+        ttc_list.append((abs(d) / 1000.0) / abs(v))
+    ttc = min(ttc_list) if ttc_list else 99.0
     self.shared_data.behind_ttc = ttc
     msg.amapNavi.lidarBehindVdistTime = float(ttc)
 
@@ -581,42 +584,53 @@ class AmapNaviServ:
     threading.Thread(target=self._headunit_cmd_recv_thread, daemon=True).start()
 
   def _discovery_responder_thread(self):
-    """响应 Android 车机端 5510 / 4210 探针发现广播 (c3_ping -> c3_pong)"""
+    """对齐车机 UdpDeviceDiscovery：车机 5510 -> 广播 4210，期望 resp=c3_pong"""
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
       s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
       s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
       try:
-        s.bind(('0.0.0.0', 5510))
+        s.bind(('0.0.0.0', 4210))
       except Exception as e:
-        print(f"Discovery bind 5510 error: {e}")
+        print(f"Discovery bind 4210 error: {e}")
         return
       while True:
         try:
           data, addr = s.recvfrom(256)
-          if b"c3_ping" in data:
-            ip = addr[0]
-            self.shared_data.app_ip = ip
-            with lock:
-              now = time.time()
-              if ip not in self.clients:
-                self.clients[ip] = {
-                  "last_time": now,
-                  "alive": True,
-                  "device": "navi",
-                  "device_type": "navi"
-                }
-              else:
-                self.clients[ip]["last_time"] = now
-                self.clients[ip]["alive"] = True
-            resp = json.dumps({
-              "device": "comma3",
-              "status": "ready",
-              "ip": ip,
-              "version": "openpilot-cp-custo"
-            }).encode('utf-8')
-            s.sendto(resp, (ip, 5510))
-        except Exception:
-          time.sleep(0.5)
+          is_probe = (b"c3_ping" in data) or (b'"discover"' in data)
+          if not is_probe:
+            continue
+          ip = addr[0]
+          now = time.time()
+          self.shared_data.app_ip = ip
+          self.shared_data.app_ip_ts = now
+          with lock:
+            if ip not in self.clients:
+              self.clients[ip] = {}
+            self.clients[ip].update({
+              "last_time": now,
+              "last_seen": now,
+              "alive": True,
+              "device": "navi",
+              "device_type": "navi",
+              "port": self.broadcast_port,
+            })
+          resp = json.dumps({
+            "resp": "c3_pong",
+            "device": "comma3",
+            "status": "ready",
+            "device_id": "c3",
+            "auth": True,
+            "ip": ip,
+            "version": "openpilot-cp-custo"
+          }).encode('utf-8')
+          s.sendto(resp, (ip, addr[1]))
+          if addr[1] != 5510:
+            try:
+              s.sendto(resp, (ip, 5510))
+            except Exception:
+              pass
+        except Exception as e:
+          time.sleep(0.2)
 
   def _headunit_cmd_recv_thread(self):
     """监听车机发送到 7705 端口的控制指令"""
@@ -984,14 +998,22 @@ class AmapNaviServ:
   # 更新客户端命令
   # ----------------------
   def _update_command(self, json_obj, ip):
+    if self.shared_data.app_ip is not None and ip != self.shared_data.app_ip:
+      return  # 拒绝热点内第三方注入
     with lock:
-      if "index" in json_obj:
-        self.shared_data.cmd_index = int(json_obj.get("index"))
+      idx = json_obj.get("index") or json_obj.get("seq")
+      try:
+        idx = int(idx)
+      except (TypeError, ValueError):
+        idx = None
+      if idx is not None and idx > self.shared_data.cmd_index:
+        self.shared_data.cmd_index = idx  # 单调递增，旧包/重放包不转发
       if "cmd" in json_obj:
-        self.shared_data.remote_cmd = json_obj.get("cmd")
-        self.shared_data.remote_arg = json_obj.get("arg")
-      if "param" in json_obj:
-        self.shared_data.overtake_mode = int(json_obj.get("param", 1))
+        c = json_obj.get("cmd")
+        self.shared_data.remote_cmd = "CANCEL" if c == "CANCEL_LANE_CHANGE" else c
+        self.shared_data.remote_arg = json_obj.get("direction") or json_obj.get("arg")
+      raw = json_obj.get("param", json_obj.get("overtake_mode", 1))
+      self.shared_data.overtake_mode = raw if raw in (0, 1, 2) else 1
 
   # ----------------------
   # 更新雷达/摄像头盲区与距离数据
@@ -1630,10 +1652,8 @@ class AmapNaviServ:
               if self.broadcast_ip is not None and lane_broadcast_dat is not None:
                 sock.sendto(lane_broadcast_dat, (self.broadcast_ip, self.lane_remote_port))
 
-              navi_broadcast_msg = self.make_broadcast_message(self.navi_port, "navi")
-              navi_broadcast_dat = navi_broadcast_msg.encode('utf-8')
-              if self.broadcast_ip is not None and navi_broadcast_dat is not None:
-                sock.sendto(navi_broadcast_dat, (self.broadcast_ip, self.navi_remote_port))
+              # 车机通过 UdpDeviceDiscovery(5510/4210) 发现 C3；此遗留 navi 广播
+              # 发往车机未监听的端口，无人接收，已移除以避免误导与无效发包。
 
           except Exception as e:
             if (self.shared_data.showDebugLog & 32) > 0:
@@ -1673,7 +1693,7 @@ class AmapNaviServ:
         if self.shared_data.gas_press is not None:
           msg["gas_press"] = self.shared_data.gas_press
         if self.shared_data.break_press is not None:
-          msg["break_press"] = self.shared_data.break_press
+          msg["brake_press"] = self.shared_data.break_press  # 对齐车机 CarrotTelemetryParser 的 brake_press
         if self.shared_data.engaged is not None:
           msg["engaged"] = self.shared_data.engaged
         # 盲区检测
@@ -1685,6 +1705,11 @@ class AmapNaviServ:
         else:
           msg["left_blindspot"] = False
           msg["right_blindspot"] = False
+
+      # 与车机 CarrotTelemetryParser 对齐：后向 TTC 与后向盲区
+      msg['lidar_behind_vdist_time'] = float(self.shared_data.behind_ttc)  # 0.0 = 无效/缺失哨兵
+      msg['lidar_lbblind'] = bool(self.shared_data.lidar_lbblind)
+      msg['lidar_rbblind'] = bool(self.shared_data.lidar_rbblind)
 
       # 雷达数据
       if self.sm.alive['radarState']:# and self.sm.updated['radarState']:
@@ -1765,6 +1790,13 @@ class AmapNaviServ:
           if idx in d and d[idx] is not None:
             key = field if idx == 0 else f"{field}{idx}"
             msg[key] = d[idx]
+
+      # 动态 key 仅在 lidar_id==0 时才产生 lb_drel/rb_drel；用主雷达补确定值（mm -> m），
+      # 保证车机 CarrotTelemetryParser.leftRearDistance/rightRearDistance 始终有米制数据
+      if self.shared_data.main_lb_drel is not None and self.shared_data.main_lb_drel > 0:
+        msg['lb_drel'] = round(self.shared_data.main_lb_drel / 1000.0, 1)
+      if self.shared_data.main_rb_drel is not None and self.shared_data.main_rb_drel > 0:
+        msg['rb_drel'] = round(self.shared_data.main_rb_drel / 1000.0, 1)
 
       #雷达或摄像头是否存在标志
       msg['lidar_l'] = self.shared_data.lidar_l
@@ -1947,7 +1979,7 @@ class AmapNaviServ:
         if self.shared_data.gas_press is not None:
           msg["gas_press"] = self.shared_data.gas_press
         if self.shared_data.break_press is not None:
-          msg["break_press"] = self.shared_data.break_press
+          msg["brake_press"] = self.shared_data.break_press  # 对齐车机 CarrotTelemetryParser 的 brake_press
       # 雷达数据
       if self.sm.alive['radarState']:  # and self.sm.updated['radarState']:
         radar_state = self.sm['radarState']
