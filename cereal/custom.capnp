@@ -71,6 +71,8 @@ struct AmapNavi @0xaedffd8f31e7b55d {
 	lbDrel @12 : Int32;
 	rfDrel @13 : Int32;
 	rbDrel @14 : Int32;
+	overtakeMode @15 : Int32;
+	lidarBehindVdistTime @16 : Float32;
 }
 
 struct CustomReserved2 @0xf35cc4560bbf6ec2 {

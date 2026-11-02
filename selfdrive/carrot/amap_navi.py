@@ -143,7 +143,9 @@ class SharedData:
     self.cmd_index = -1
     self.remote_cmd = ""
     self.remote_arg = ""
-
+    self.overtake_mode = 1 # 0:激进, 1:常规, 2:保守
+    self.behind_ttc = 99.0 # 后方逼近时距
+    self.app_ip = None # 车机IP
     self.ext_blinker = BLINKER_NONE # 外挂控制器转向灯状态
     self.ext_state = 0  # 外挂控制器的数量
     self.blinker_ctrl = BLINKER_NONE
@@ -289,6 +291,14 @@ class AmapNaviServ:
     msg.amapNavi.lbDrel = 0 if (self.shared_data.main_lb_drel is None) else int(round(self.shared_data.main_lb_drel/100))
     msg.amapNavi.rfDrel = 0 if (self.shared_data.main_rf_drel is None) else int(round(self.shared_data.main_rf_drel/100))
     msg.amapNavi.rbDrel = 0 if (self.shared_data.main_rb_drel is None) else int(round(self.shared_data.main_rb_drel/100))
+    msg.amapNavi.overtakeMode = getattr(self.shared_data, "overtake_mode", 1)
+    ttc = 99.0
+    if self.shared_data.lb_vrel and self.shared_data.lb_vrel < -0.1 and self.shared_data.main_lb_drel:
+      ttc = (self.shared_data.main_lb_drel / 1000.0) / abs(self.shared_data.lb_vrel)
+    elif self.shared_data.rb_vrel and self.shared_data.rb_vrel < -0.1 and self.shared_data.main_rb_drel:
+      ttc = (self.shared_data.main_rb_drel / 1000.0) / abs(self.shared_data.rb_vrel)
+    self.shared_data.behind_ttc = ttc
+    msg.amapNavi.lidarBehindVdistTime = float(ttc)
 
     self.pm.send('amapNavi', msg)
 
@@ -564,9 +574,65 @@ class AmapNaviServ:
     threading.Thread(target=self._udp_recv_thread, daemon=True).start()
     # 启动清理客户端线程
     threading.Thread(target=self._clean_clients_thread, daemon=True).start()
-    #数据处理线程
+    # 数据处理线程
     threading.Thread(target=self._data_deal_thread, daemon=True).start()
+    # 新增: 5510 探针自动握手线程与 7705 控制指令接收线程
+    threading.Thread(target=self._discovery_responder_thread, daemon=True).start()
+    threading.Thread(target=self._headunit_cmd_recv_thread, daemon=True).start()
 
+  def _discovery_responder_thread(self):
+    """响应 Android 车机端 5510 / 4210 探针发现广播 (c3_ping -> c3_pong)"""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+      s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+      s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+      try:
+        s.bind(('0.0.0.0', 5510))
+      except Exception as e:
+        print(f"Discovery bind 5510 error: {e}")
+        return
+      while True:
+        try:
+          data, addr = s.recvfrom(256)
+          if b"c3_ping" in data:
+            ip = addr[0]
+            self.shared_data.app_ip = ip
+            with lock:
+              now = time.time()
+              if ip not in self.clients:
+                self.clients[ip] = {
+                  "last_time": now,
+                  "alive": True,
+                  "device": "navi",
+                  "device_type": "navi"
+                }
+              else:
+                self.clients[ip]["last_time"] = now
+                self.clients[ip]["alive"] = True
+            resp = json.dumps({
+              "device": "comma3",
+              "status": "ready",
+              "ip": ip,
+              "version": "openpilot-cp-custo"
+            }).encode('utf-8')
+            s.sendto(resp, (ip, 5510))
+        except Exception:
+          time.sleep(0.5)
+
+  def _headunit_cmd_recv_thread(self):
+    """监听车机发送到 7705 端口的控制指令"""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+      s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+      try:
+        s.bind(('0.0.0.0', self.navi_remote_port))
+      except Exception as e:
+        print(f"Cmd bind {self.navi_remote_port} error: {e}")
+        return
+      while True:
+        try:
+          data, addr = s.recvfrom(1024)
+          self._process_single_packet(data, addr)
+        except Exception:
+          time.sleep(0.05)
   #数据处理线程
   def _data_deal_thread(self):
     _clients = {}
@@ -924,6 +990,8 @@ class AmapNaviServ:
       if "cmd" in json_obj:
         self.shared_data.remote_cmd = json_obj.get("cmd")
         self.shared_data.remote_arg = json_obj.get("arg")
+      if "param" in json_obj:
+        self.shared_data.overtake_mode = int(json_obj.get("param", 1))
 
   # ----------------------
   # 更新雷达/摄像头盲区与距离数据
@@ -1520,9 +1588,9 @@ class AmapNaviServ:
                         navi_dat = navi_msg.encode('utf-8')
                       if navi_dat is not None:
                         sock.sendto(navi_dat, (ip, port))
-                        sock.sendto(navi_dat, (ip, self.navi_remote_port))
-                        #if self.app_addr is not None:
-                        #  sock.sendto(navi_dat, self.app_addr)
+                        sock.sendto(navi_dat, (ip, self.navi_port))
+                        if self.shared_data.app_ip and self.shared_data.app_ip != ip:
+                          sock.sendto(navi_dat, (self.shared_data.app_ip, self.navi_port))
                         if (self.shared_data.showDebugLog & 32) > 0:
                           print(f"sendto {ip} (overtake): {navi_dat}")
                     elif (device_type == "lidar" or device_type == "camera") and ((frame % 3) == 0):  # 雷达模块

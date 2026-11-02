@@ -919,8 +919,25 @@ class DesireHelper:
 
     if self.carrot_lane_change_count > 0: #些计数为carrorMan发送过来的LANECHANGE触发的变道
       auto_lane_change_blocked = False
-      auto_lane_change_trigger = lane_change_available
-      auto_lane_change_trigger_no_bsd = auto_lane_change_trigger
+      # 读取高德车机协同超车模式与后方激光雷达时距 (TTC)
+      overtake_mode = getattr(amapNavi, 'overtakeMode', 1)
+      behind_ttc = getattr(amapNavi, 'lidarBehindVdistTime', 99.0)
+      if overtake_mode == 0:
+        ttc_threshold = 1.8 # 激进模式
+      elif overtake_mode == 2:
+        ttc_threshold = 3.5 # 保守模式
+      else:
+        ttc_threshold = 2.5 # 常规模式 (默认)
+
+      rear_conflict = (0.0 < behind_ttc < ttc_threshold)
+      if rear_conflict:
+        auto_lane_change_trigger = False
+        auto_lane_change_trigger_no_bsd = False
+        if (self.frame % int(2.0 / DT_MDL)) == 0:
+          self.lane_change_audio(True, 6, 0) # 播报盲区有车
+      else:
+        auto_lane_change_trigger = lane_change_available and not side_object_detected
+        auto_lane_change_trigger_no_bsd = lane_change_available
     else:
       self.carrot_blinker_state = BLINKER_NONE #new
       #如果自动转弯要求是左变道，但是用户没有打左转向灯，那么会阻止自动变道
