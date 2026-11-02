@@ -523,6 +523,16 @@ class DesireHelper:
         self.carrot_lane_change_count = int(LANE_CHANGE_TIME_MAX*2.0 / DT_MDL)
       else:
         self.carrot_overtake_cmd = False
+    elif carrotMan.carrotCmdIndex != self.carrot_cmd_index_last and carrotMan.carrotCmd == "CANCEL":
+      self.carrot_cmd_index_last = carrotMan.carrotCmdIndex
+      self.carrot_lane_change_count = 0
+      self.carrot_overtake_cmd = False
+      self.carrot_blinker_state = BLINKER_NONE
+      self.lane_change_state = LaneChangeState.off
+      self.lane_change_direction = LaneChangeDirection.none
+      self.trigger_name = "cancel cmd"
+      self.lane_change_audio(True, 4, 0)
+      print(f"---[{time.strftime('%H:%M:%S')}.{self.frame%100}]Received CANCEL command, aborting lane change")
     elif atc_type in ["turn left", "turn right"]: #来自carrot_man.py的update_auto_turn函数，转弯请求
       if self.atc_active != 2:
         below_lane_change_speed = True

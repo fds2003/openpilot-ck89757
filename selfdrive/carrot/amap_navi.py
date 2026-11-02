@@ -1013,14 +1013,25 @@ class AmapNaviServ:
         idx = int(idx)
       except (TypeError, ValueError):
         idx = None
-      if idx is not None and idx > self.shared_data.cmd_index:
+      now = time.time()
+      if now - getattr(self.shared_data, "last_cmd_time", 0.0) > 10.0:
+        self.shared_data.cmd_index = -1  # 超过 10 秒无指令，允许车机重启重置序号
+      self.shared_data.last_cmd_time = now
+
+      if idx is not None and (idx > self.shared_data.cmd_index or self.shared_data.cmd_index == -1):
         self.shared_data.cmd_index = idx  # 单调递增，旧包/重放包不转发
-      if "cmd" in json_obj:
-        c = json_obj.get("cmd")
-        self.shared_data.remote_cmd = "CANCEL" if c == "CANCEL_LANE_CHANGE" else c
-        self.shared_data.remote_arg = json_obj.get("direction") or json_obj.get("arg")
-      raw = json_obj.get("param", json_obj.get("overtake_mode", 1))
-      self.shared_data.overtake_mode = raw if raw in (0, 1, 2) else 1
+        if "cmd" in json_obj:
+          c = json_obj.get("cmd")
+          self.shared_data.remote_cmd = "CANCEL" if c == "CANCEL_LANE_CHANGE" else c
+          self.shared_data.remote_arg = json_obj.get("direction") or json_obj.get("arg")
+        raw = json_obj.get("param", json_obj.get("overtake_mode", None))
+        if raw is not None:
+          try:
+            r = int(raw)
+            if r in (0, 1, 2):
+              self.shared_data.overtake_mode = r
+          except (TypeError, ValueError):
+            pass
 
   # ----------------------
   # 更新雷达/摄像头盲区与距离数据
