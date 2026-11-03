@@ -22,7 +22,31 @@ The developer does **not take any responsibility** for real-world installation o
 * **CAN FD vehicles with HDA2 (ADAS module equipped)** Use an aftermarket harness, connected to the ADAS module.
 * Please note that not all vehicles are supported.
 
+---
 
+## 🚗 库斯途 × Comma 3 高德协同领航定制分支 (`cp-custo-amap`)
+
+本分支专为**北京现代库斯途 2021~2024 款（Hyundai Custin 1st Gen）**量身深度定制。结合现代原厂车机高德地图车机版与开源中继应用 [AmapNavi-Reborn](https://github.com/fds2003/AmapNavi-Reborn)，实现整车双向强实时协同领航与专属车辆动力学安全控制：
+
+### 🌟 核心特性概览
+* **高德地图双向毫秒级协同**：通过车载 Wi-Fi 局域网（UDP 4210/5510 探针握手，7706 下行 20Hz 81项遥测，7705 接收超车控制指令）；
+* **三级超车风格与激光雷达 TTC 门禁**：支持激进 (1.8s) / 常规 (2.5s) / 保守 (3.5s) 超车风格，后方车辆快速逼近时刚性阻断，并在变道执行期持续复检；
+* **紧急变道撤销与驾驶员接管**：车机下发 `CANCEL` 指令 50ms 内立即中止变道；方向盘物理反抗打盘下一帧瞬间交还人工控制；
+* **现代库斯途专车五大动力学调校**：
+  1. 帕里斯帝（Palisade）2吨级大车 NNFF 神经网络力矩模型，消除 3.055 米长轴距大弯推头与中心画龙；
+  2. 7座 MPV 5.0 秒平缓变道 S 曲线（横向加速度 $\le 0.08\text{g}$，横向 Jerk $\le 0.05\text{g/s}$），防后排老人小孩晕车；
+  3. 现代自研 8AT 变速箱起步防顿挫固化 `ret.startAccel = 1.0 m/s²`；
+  4. 红绿灯停稳锁零防蠕动（结合高德红绿灯倒计时 `actual_stop_distance = 0.0`）；
+  5. 原厂全液晶仪表盘联动点亮（20Hz `0x485 LFAHDA_MFC` 绿色车道线与方向盘图标）。
+
+### 📚 库斯途专车文档库
+* **[现代库斯途 Comma 3 全景技术架构终极手册](COMMA3_CUSTIN_MASTER_GUIDE.md)**
+* **[高德协同领航技术设计与通信规范](docs/custin/COOPERATIVE_PILOT.md)**
+* **[车辆动力学特性与专属调优规范](docs/custin/VEHICLE_DYNAMICS.md)**
+* **[Comma 3 安装器原理与一键刷机协议](INSTALLER_GUIDE.md)**
+* **[车机端配套开源工程 (AmapNavi-Reborn)](https://github.com/fds2003/AmapNavi-Reborn)**
+
+---
 <div align="center" style="text-align: center;">
 
 <h1>carrotpilot</h1>
