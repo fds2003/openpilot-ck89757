@@ -238,9 +238,12 @@ class CarInterface(CarInterfaceBase):
 
     # Car specific configuration overrides
 
+    if candidate == CAR.HYUNDAI_CUSTIN_1ST_GEN:
+      ret.steerActuatorDelay = 0.15 # 3.055m 超长轴距偏航建立补偿
+      ret.startAccel = 1.0          # 2.0T 8AT 固化起步加速度，消除升挡顿挫
+
     if candidate == CAR.KIA_OPTIMA_G4_FL:
       ret.steerActuatorDelay = 0.2
-
     # Dashcam cars are missing a test route, or otherwise need validation
     # TODO: Optima Hybrid 2017 uses a different SCC12 checksum
     #ret.dashcamOnly = candidate in {CAR.KIA_OPTIMA_H, }

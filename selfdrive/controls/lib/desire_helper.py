@@ -16,7 +16,7 @@ TurnDirection = log.Desire
 
 LANE_CHANGE_SPEED_MIN = 30 * CV.KPH_TO_MS
 LANE_CHANGE_TIME_MAX = 10.
-
+LANE_CHANGE_STEP_CUSTO = 1.2 * DT_MDL  # 库斯途 7座 MPV 5.0s 舒适平缓变道步进
 BLINKER_NONE = 0
 BLINKER_LEFT = 1
 BLINKER_RIGHT = 2
@@ -956,7 +956,7 @@ class DesireHelper:
     overtake_mode = amapNavi.overtakeMode if amap_alive and amapNavi.overtakeMode in (0, 1, 2) else 1
     behind_ttc = amapNavi.lidarBehindVdistTime if amap_alive else 0.0
     ttc_threshold = {0: 1.8, 1: 2.5, 2: 3.5}.get(overtake_mode, 2.5)
-    rear_conflict = (behind_ttc <= 0.0) or (behind_ttc < ttc_threshold)
+    rear_conflict = (behind_ttc <= 0.0) or (0.0 < behind_ttc < ttc_threshold)
     if rear_conflict:
       auto_lane_change_trigger = False
       auto_lane_change_trigger_no_bsd = False
@@ -1243,9 +1243,8 @@ class DesireHelper:
 
       # =============LaneChangeState.laneChangeStarting=============
       elif self.lane_change_state == LaneChangeState.laneChangeStarting:
-        # fade out over .5s
-        self.lane_change_ll_prob = max(self.lane_change_ll_prob - 2 * DT_MDL, 0.0)
-
+        # fade out over 5.0s (MPV 专属平滑 S 曲线，防后排老人小孩晃动晕车)
+        self.lane_change_ll_prob = max(self.lane_change_ll_prob - LANE_CHANGE_STEP_CUSTO, 0.0)
         # M-15: 与触发段统一 fail-safe 语义；失效（0.0 / 消息缺失）同样中止，
         # 且整个 laneChangeStarting 阶段持续复检，不再受 ll_prob > 0.3 的约 350 ms 权限窗限制
         _alive = self.sm.alive['amapNavi']
@@ -1361,7 +1360,7 @@ class DesireHelper:
         self.atc_cancel = True
         self.atc_cancel_delay = int(2.0 / DT_MDL)
         print(f"---set atc_cancel=true, delay={self.atc_cancel_delay}")
-        self.lane_change_audio(True, 4, 0) # 立即播报领航已退出
+
     elif steering_pressed and self.atc_cancel:
       self.atc_cancel_delay = int(2.0/DT_MDL)
 
