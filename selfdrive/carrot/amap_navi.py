@@ -292,14 +292,15 @@ class AmapNaviServ:
     msg.amapNavi.rfDrel = 0 if (self.shared_data.main_rf_drel is None) else int(round(self.shared_data.main_rf_drel/100))
     msg.amapNavi.rbDrel = 0 if (self.shared_data.main_rb_drel is None) else int(round(self.shared_data.main_rb_drel/100))
     msg.amapNavi.overtakeMode = self.shared_data.overtake_mode
-    # 两侧后向雷达都参与，取最小 TTC（最保守）；无效/缺失/远离 -> 99.0 表示安全
+    # 两侧后向雷达都参与，取最小 TTC（最保守）；无有效目标 -> 0.0 哨兵，
+    # 消费端一律阻断（M-12：失效态不得解释为"安全"）
     ttc_list = []
     for side in ("lb", "rb"):
       d = getattr(self.shared_data, f"main_{side}_drel", None)
       v = getattr(self.shared_data, f"{side}_vrel", None)
       if d is not None and abs(d) > 0 and v is not None and v < -0.1:
         ttc_list.append((abs(d) / 1000.0) / abs(v))
-    ttc = min(ttc_list) if ttc_list else 99.0
+    ttc = min(ttc_list) if ttc_list else 0.0
     self.shared_data.behind_ttc = ttc
     msg.amapNavi.lidarBehindVdistTime = float(ttc)
 
@@ -1809,12 +1810,17 @@ class AmapNaviServ:
             key = field if idx == 0 else f"{field}{idx}"
             msg[key] = d[idx]
 
-      # 动态 key 仅在 lidar_id==0 时才产生 lb_drel/rb_drel；用主雷达补确定值（mm -> m），
-      # 保证车机 CarrotTelemetryParser.leftRearDistance/rightRearDistance 始终有米制数据
-      if self.shared_data.main_lb_drel is not None and self.shared_data.main_lb_drel > 0:
-        msg['lb_drel'] = round(self.shared_data.main_lb_drel / 1000.0, 1)
-      if self.shared_data.main_rb_drel is not None and self.shared_data.main_rb_drel > 0:
-        msg['rb_drel'] = round(self.shared_data.main_rb_drel / 1000.0, 1)
+      # M-13 协议层固定单位：lb_drel/rb_drel 一律为米制浮点。
+      # fields 循环在 idx==0 时可能写入原始雷达值（单位不确定），此处无条件覆盖；
+      # 无主雷达数据时删除该键，让车机解析器回退到 -999999 无目标哨兵。
+      # main_*_drel 单位为 mm、后向距离常以负值表示，取绝对值后换算为米。
+      for side in ("lb", "rb"):
+        key = f"{side}_drel"
+        main = getattr(self.shared_data, f"main_{side}_drel", None)
+        if main is not None:
+          msg[key] = round(abs(main) / 1000.0, 1)
+        else:
+          msg.pop(key, None)
 
       #雷达或摄像头是否存在标志
       msg['lidar_l'] = self.shared_data.lidar_l

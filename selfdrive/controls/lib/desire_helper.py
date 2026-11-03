@@ -927,29 +927,10 @@ class DesireHelper:
     side_object_detected = self.side_object_detected or is_car_blind or is_solid #汇总盲区状态
     self.lane_appeared = self.lane_appeared and distance_to_road_edge < 4.0 #新车道出现还要附加个距离道路边缘小于4米的条件
 
-    if self.carrot_lane_change_count > 0: #些计数为carrorMan发送过来的LANECHANGE触发的变道
+    if self.carrot_lane_change_count > 0: #来自车机/自动变道触发
       auto_lane_change_blocked = False
-      # capnp 字段始终存在，getattr 的 default 永不生效；缺失消息返回 0/0.0
-      amap_alive = self.sm.alive['amapNavi']
-      overtake_mode = amapNavi.overtakeMode if amap_alive and amapNavi.overtakeMode in (0, 1, 2) else 1
-      behind_ttc = amapNavi.lidarBehindVdistTime if amap_alive else 0.0
-      if overtake_mode == 0:
-        ttc_threshold = 1.8 # 激进模式
-      elif overtake_mode == 2:
-        ttc_threshold = 3.5 # 保守模式
-      else:
-        ttc_threshold = 2.5 # 常规模式 (默认)
-
-      # 无效(<=0)、缺失(0.0)、以及 TTC 小于门限，一律阻断 —— fail-safe 而非 fail-open
-      rear_conflict = (behind_ttc <= 0.0) or (behind_ttc < ttc_threshold)
-      if rear_conflict:
-        auto_lane_change_trigger = False
-        auto_lane_change_trigger_no_bsd = False
-        if (self.frame % int(2.0 / DT_MDL)) == 0:
-          self.lane_change_audio(True, 6, 0) # 播报盲区有车
-      else:
-        auto_lane_change_trigger = lane_change_available and not side_object_detected
-        auto_lane_change_trigger_no_bsd = lane_change_available
+      auto_lane_change_trigger = lane_change_available and not side_object_detected
+      auto_lane_change_trigger_no_bsd = lane_change_available
     else:
       self.carrot_blinker_state = BLINKER_NONE #new
       #如果自动转弯要求是左变道，但是用户没有打左转向灯，那么会阻止自动变道
@@ -967,6 +948,20 @@ class DesireHelper:
               f"(lane_available_trig'{self.lane_available_trigger}'||self.lane_appeared'{self.lane_appeared}')&!object_detected'{side_object_detected}' "
               f"obj_cnt={self.object_detected_count:.1f},active={self.atc_active},last_lane={last_lane} time:{self.last_lane_count}")
         print(f"---blinker_state={blinker_state},atc_blinker_state={atc_blinker_state},driver_blinker_state={driver_blinker_state},esp32 blinker={self.blinker}")
+
+    # M-12/M-14: TTC 刚性门禁对所有变道触发路径生效（车机指令与自主变道），
+    # 不再局限于 carrot_lane_change_count 的 0.2 秒计数窗口。
+    # 失效（0.0 / 消息缺失）与 TTC 不足一律阻断，与执行期复检共用同一 fail-safe 语义。
+    amap_alive = self.sm.alive['amapNavi']
+    overtake_mode = amapNavi.overtakeMode if amap_alive and amapNavi.overtakeMode in (0, 1, 2) else 1
+    behind_ttc = amapNavi.lidarBehindVdistTime if amap_alive else 0.0
+    ttc_threshold = {0: 1.8, 1: 2.5, 2: 3.5}.get(overtake_mode, 2.5)
+    rear_conflict = (behind_ttc <= 0.0) or (behind_ttc < ttc_threshold)
+    if rear_conflict:
+      auto_lane_change_trigger = False
+      auto_lane_change_trigger_no_bsd = False
+      if (self.frame % int(2.0 / DT_MDL)) == 0:
+        self.lane_change_audio(True, 6, 0) # 播报后方来车
 
     if not lateral_active or self.lane_change_timer > LANE_CHANGE_TIME_MAX: #横向未激活或变道时间超过10秒时，退出变道控制
       if self.lane_change_state != LaneChangeState.off:
@@ -1251,11 +1246,13 @@ class DesireHelper:
         # fade out over .5s
         self.lane_change_ll_prob = max(self.lane_change_ll_prob - 2 * DT_MDL, 0.0)
 
-        # 变道执行期持续复检后车时距 (fail-safe: 时距不足立即中止并报警)
+        # M-15: 与触发段统一 fail-safe 语义；失效（0.0 / 消息缺失）同样中止，
+        # 且整个 laneChangeStarting 阶段持续复检，不再受 ll_prob > 0.3 的约 350 ms 权限窗限制
         _alive = self.sm.alive['amapNavi']
         _ttc = amapNavi.lidarBehindVdistTime if _alive else 0.0
-        _thr = {0: 1.8, 1: 2.5, 2: 3.5}.get(getattr(amapNavi, 'overtakeMode', 1), 2.5)
-        if (0.0 < _ttc < _thr) and self.lane_change_ll_prob > 0.3:
+        _mode = amapNavi.overtakeMode if _alive and amapNavi.overtakeMode in (0, 1, 2) else 1
+        _thr = {0: 1.8, 1: 2.5, 2: 3.5}.get(_mode, 2.5)
+        if (_ttc <= 0.0) or (_ttc < _thr):
           self.lane_change_state = LaneChangeState.off
           self.lane_change_direction = LaneChangeDirection.none
           self.trigger_name = "rear ttc abort"
