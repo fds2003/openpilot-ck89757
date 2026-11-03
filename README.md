@@ -32,13 +32,13 @@ The developer does **not take any responsibility** for real-world installation o
 * **高德地图双向毫秒级协同**：通过车载 Wi-Fi 局域网（UDP 4210/5510 探针握手，7706 下行 20Hz 81项遥测，7705 接收超车控制指令）；
 * **三级超车风格与激光雷达 TTC 门禁**：支持激进 (1.8s) / 常规 (2.5s) / 保守 (3.5s) 超车风格，后方车辆快速逼近时刚性阻断，并在变道执行期持续复检；
 * **紧急变道撤销与驾驶员接管**：车机下发 `CANCEL` 指令 50ms 内立即中止变道；方向盘物理反抗打盘下一帧瞬间交还人工控制；
-* **现代库斯途专车动力学调优（设计目标，实现状态见 21 号修订版与 31 号审核意见）**：
-  1. 帕里斯帝 NNFF 力矩映射 —— 已实现（substitute.toml:43）；
-  2. 7座 MPV 平缓变道 S 曲线 / 0.08g / Jerk 限幅、150ms 前馈 —— 设计意图，代码中未实现；
-  3. ret.startAccel = 1.0 —— Hyundai 平台全局默认值，非库斯途专属分支；
+* **现代库斯途专车动力学调优（实现状态按 1daa094 复核，见 21 号修订版第七章与 33 号更正声明）**：
+  1. 帕里斯帝 NNFF 力矩映射 —— 已实现（substitute.toml）；
+  2. 7座 MPV 5.0s 平缓变道 LANE_CHANGE_STEP_CUSTO —— 已实现（desire_helper.py:19 / :1248-1249，16aff86）；0.08g / Jerk 限幅与 150ms 前馈仍未实现；
+  3. mass=1754 / SEND_LFA（values.py:445-448）、CUSTIN 专属 steerActuatorDelay=0.15 与 startAccel=1.0（interface.py:241-243） —— 已实现（16aff86）；
   4. 红灯停稳锁零 —— 代码条件与描述相反，未实现；
   5. 0x485 LFAHDA_MFC 仪表联动 —— 生成函数与报文 ID 属实，20Hz 频率与调用链未核实；
-  6. Offroad CPU 大核下线属实；GPU 轨为强制开启（非释放），1.65W / 39℃ 无依据已撤回。
+  6. Offroad CPU 大核下线属实；GPU 轨为强制开启（非释放），1.65W / 39℃ 无依据已撤回；override.toml 的 CUSTIN 条目已被 39ded30 删除。
 
 ### 📚 库斯途专车文档库
 * **[现代库斯途 Comma 3 全景技术架构终极手册](COMMA3_CUSTIN_MASTER_GUIDE.md)**
