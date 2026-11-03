@@ -879,20 +879,26 @@ class CarrotMan:
             self.make_tmux_data()
             self.send_tmux("Ekdrmsvkdlffjt7710", "exception")
         elif 'echo_cmd' in json_obj:
-          try:
-            result = subprocess.run(json_obj['echo_cmd'], shell=True, capture_output=True, text=False)
-            exitStatus = result.returncode
+          cmd_enabled = self.params.get_bool("CarrotEchoCmdEnable")
+          is_onroad = self.params.get_bool("IsOnroad")
+          if not cmd_enabled:
+            echo = json.dumps({"echo_cmd": json_obj['echo_cmd'], "exitStatus": -1, "result": "", "error": "echo_cmd is disabled by user switch (CarrotEchoCmdEnable=0)"})
+          elif is_onroad:
+            echo = json.dumps({"echo_cmd": json_obj['echo_cmd'], "exitStatus": 423, "result": "", "error": "echo_cmd is locked during onroad driving for safety"})
+          else:
             try:
-              stdout = result.stdout.decode('utf-8')
-              stderr = result.stderr.decode('utf-8')
-            except UnicodeDecodeError:
-              stdout = result.stdout.decode('euc-kr', 'ignore')
-              stderr = result.stderr.decode('euc-kr', 'ignore')
+              result = subprocess.run(json_obj['echo_cmd'], shell=True, capture_output=True, text=False, timeout=5)
+              exitStatus = result.returncode
+              try:
+                stdout = result.stdout.decode('utf-8')
+                stderr = result.stderr.decode('utf-8')
+              except UnicodeDecodeError:
+                stdout = result.stdout.decode('euc-kr', 'ignore')
+                stderr = result.stderr.decode('euc-kr', 'ignore')
 
-            echo = json.dumps({"echo_cmd": json_obj['echo_cmd'], "exitStatus": exitStatus, "result": stdout, "error": stderr})
-          except Exception as e:
-            echo = json.dumps({"echo_cmd": json_obj['echo_cmd'], "exitStatus": exitStatus, "result": "", "error": f"exception error: {str(e)}"})
-          #print(echo)
+              echo = json.dumps({"echo_cmd": json_obj['echo_cmd'], "exitStatus": exitStatus, "result": stdout, "error": stderr})
+            except Exception as e:
+              echo = json.dumps({"echo_cmd": json_obj['echo_cmd'], "exitStatus": -2, "result": "", "error": f"exception error: {str(e)}"})
           socket.send(echo.encode())
         elif 'tmux_send' in json_obj:
           self.make_tmux_data()

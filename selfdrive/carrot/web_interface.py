@@ -76,8 +76,18 @@ class WebInterface:
                 except Exception as e:
                     print(f"OPTIONS请求处理错误: {e}")
 
+            def _origin_allowed(self):
+                """拒绝非本机来源的浏览器跨站请求，防止 CSRF 篡改行车参数"""
+                origin = self.headers.get('Origin')
+                if origin is None:
+                    return True
+                return origin.startswith('http://127.0.0.1') or origin.startswith('http://localhost')
+
             def do_GET(self):
                 """处理GET请求"""
+                if not self._origin_allowed():
+                    self.send_error(403, "cross-origin request denied")
+                    return
                 try:
                     if self.path == '/':
                         self.send_response(301)
@@ -131,6 +141,12 @@ class WebInterface:
 
             def do_POST(self):
                 """处理POST请求"""
+                if not self._origin_allowed():
+                    self.send_error(403, "cross-origin request denied")
+                    return
+                if self.path in ('/nav_params', '/save_params') and controller.params.get_bool("IsOnroad"):
+                    self.send_error(403, "params are locked while onroad")
+                    return
                 try:
                     content_length = int(self.headers.get('Content-Length', 0))
                     post_data = self.rfile.read(content_length).decode('utf-8')
@@ -274,9 +290,9 @@ class WebInterface:
         """启动Web服务器"""
         try:
             handler = self.create_web_handler()
-            self.web_server = HTTPServer(('0.0.0.0', self.port), handler)
+            self.web_server = HTTPServer(('127.0.0.1', self.port), handler)
             self.web_server.timeout = 30
-            print(f"🌐 Web服务器启动在端口 {self.port}")
+            print(f"🌐 Web服务器启动在 127.0.0.1:{self.port}（仅本机，需经 SSH 隧道访问）")
             self.web_server.serve_forever()
         except Exception as e:
             print(f"启动Web服务器失败: {e}")

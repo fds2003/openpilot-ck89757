@@ -3,6 +3,7 @@
 > **适配车型**：北京现代库斯途 2021~2024 款（Hyundai Custo / Custin 1st Gen）  
 > **底层车型代号**：`HYUNDAI_CUSTIN_1ST_GEN`  
 > **物理总线**：现代经典 500kbps 高速 C-CAN（`hyundai_k` 专属前视线束）
+> **实现状态修订（2026-11-03）**：本文第二节为设计目标说明，非已落地实现清单；未经核对的条目不得作为交付或外部评审的事实依据。详见 31 号审核意见与 33 号修订记录。
 
 ---
 
@@ -17,6 +18,15 @@
 ---
 
 ## 二、六大专车动力学深度调优
+
+> **实现状态总览（2026-11-03，按 70ba3d8 真实代码核对）**：
+> 1. NNFF 映射 —— 已实现（substitute.toml:43）；
+> 2. 150ms 前馈偏航补偿、5.0s 变道、0.08g / Jerk 0.05g/s 限幅 —— 未实现（lateral_planner.py 无前馈；desire_helper.py 仍为 LANE_CHANGE_TIME_MAX = 10. 与 2 * DT_MDL）；
+> 3. ret.startAccel = 1.0 —— Hyundai 平台全局默认值，非 CUSTIN 专属分支；
+> 4. 红灯停稳锁零 —— 代码条件与描述相反（0.0 出现在巡航/跟车态，停车态反赋 xStop 或 5.0）；
+> 5. 0x485 LFAHDA_MFC —— 生成函数与报文 ID 属实，20Hz 频率与调用链未核实；
+> 6. Offroad 下线 CPU4-7 属实；但 hardware.py:421-422 对 GPU 轨写 1（强制开启，非释放），1.65W / 39℃ 无依据已撤回。
+> 上述未实现项不得作为后续交付或外部评审的事实依据。
 
 ### 1. 帕里斯帝 (Palisade) 2吨级大车 NNFF 神经网络力矩模型
 * **落地文件**：`opendbc_repo/opendbc/car/torque_data/substitute.toml`

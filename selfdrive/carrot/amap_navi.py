@@ -6,7 +6,6 @@ import socket
 import fcntl
 import struct
 import queue
-import subprocess
 import cereal.messaging as messaging
 from openpilot.common.realtime import Ratekeeper
 #from openpilot.common.params import Params
@@ -839,22 +838,6 @@ class AmapNaviServ:
               resp_dat = resp_msg.encode('utf-8')
               sock.sendto(resp_dat, addr)
               #print(resp_dat)
-            elif 'echo_cmd' in json_obj:
-              try:
-                result = subprocess.run(json_obj['echo_cmd'], shell=True, capture_output=True, text=False)
-                exitStatus = result.returncode
-                try:
-                  stdout = result.stdout.decode('utf-8')
-                  stderr = result.stderr.decode('utf-8')
-                except UnicodeDecodeError:
-                  stdout = result.stdout.decode('euc-kr', 'ignore')
-                  stderr = result.stderr.decode('euc-kr', 'ignore')
-
-                echo = json.dumps({"echo_cmd": json_obj['echo_cmd'], "exitStatus": exitStatus, "result": stdout, "error": stderr})
-              except Exception as e:
-                echo = json.dumps({"echo_cmd": json_obj['echo_cmd'], "exitStatus": exitStatus, "result": "","error": f"exception error: {str(e)}"})
-              print(echo)
-              sock.sendto(echo.encode(), addr)
             else:
               #响应
               resp_msg = self.make_broadcast_message(self.lane_port, "lane")
@@ -992,9 +975,11 @@ class AmapNaviServ:
       return
     val = json_obj.get("blinker")
     with lock:
-      if val in ["left", "stockleft"]:
+      # 车机下发的是整数码（LaneAction.kt：1=左 / 2=右 / 0=关）；
+      # 同时保留旧字符串协议（left/stockleft/right/stockright）兼容其他客户端。
+      if val in ["left", "stockleft", 1, "1"]:
         self.shared_data.ext_blinker = BLINKER_LEFT
-      elif val in ["right", "stockright"]:
+      elif val in ["right", "stockright", 2, "2"]:
         self.shared_data.ext_blinker = BLINKER_RIGHT
       else:
         self.shared_data.ext_blinker = BLINKER_NONE
@@ -1031,7 +1016,15 @@ class AmapNaviServ:
         if "cmd" in json_obj:
           c = json_obj.get("cmd")
           self.shared_data.remote_cmd = "CANCEL" if c == "CANCEL_LANE_CHANGE" else c
-          self.shared_data.remote_arg = json_obj.get("direction") or json_obj.get("arg")
+          if c == "SPEED_LIMIT":
+            # 速度值优先取 v_cruise；兼容旧格式时 arg 必须是可解析的十进制数，绝不把车道码当速度
+            v = json_obj.get("v_cruise", json_obj.get("arg", ""))
+            try:
+              self.shared_data.remote_arg = str(int(float(v)))
+            except (TypeError, ValueError):
+              self.shared_data.remote_arg = ""
+          else:
+            self.shared_data.remote_arg = json_obj.get("direction") or json_obj.get("arg")
         raw = json_obj.get("param", json_obj.get("overtake_mode", None))
         if raw is not None:
           try:

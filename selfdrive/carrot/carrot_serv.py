@@ -353,6 +353,7 @@ class CarrotServ:
       self.carrotCmdIndex_last = self.carrotCmdIndex
       command_handlers = {
         "DETECT": self._handle_detect_command,
+        "SPEED_LIMIT": self._handle_speed_limit_command,
       }
 
       handler = command_handlers.get(self.carrotCmd)
@@ -377,6 +378,19 @@ class CarrotServ:
         self.traffic_light_count = int(0.5 / 0.1)
       except ValueError:
         pass
+
+  def _handle_speed_limit_command(self, xArg):
+    try:
+      speed_kph = int(xArg)
+    except (ValueError, TypeError):
+      print(f"[SPEED_LIMIT] invalid arg '{xArg}', blocked, nRoadLimitSpeed unchanged={self.nRoadLimitSpeed}")
+      return
+    if speed_kph < 0 or speed_kph > 160:
+      print(f"[SPEED_LIMIT] out-of-range {speed_kph} (expect 0~160), blocked, nRoadLimitSpeed unchanged={self.nRoadLimitSpeed}")
+      return
+    self.nRoadLimitSpeed = speed_kph
+    self.nRoadLimitSpeed_last = speed_kph
+    print(f"[SPEED_LIMIT] accepted, nRoadLimitSpeed={self.nRoadLimitSpeed}")
 
   def traffic_light(self, x, y, color, cnf):
     traffic_red = 0

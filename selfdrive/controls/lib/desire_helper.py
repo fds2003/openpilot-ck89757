@@ -1251,12 +1251,20 @@ class DesireHelper:
         _ttc = amapNavi.lidarBehindVdistTime if _alive else 0.0
         _mode = amapNavi.overtakeMode if _alive and amapNavi.overtakeMode in (0, 1, 2) else 1
         _thr = {0: 1.8, 1: 2.5, 2: 3.5}.get(_mode, 2.5)
-        if (_ttc <= 0.0) or (_ttc < _thr):
+        is_driver_initiated = (self.trigger_type in (1, 2, 3) or self.trigger_name in ("driver", "torque bsd", "torque ok"))
+        if is_driver_initiated:
+          # 驾驶员手动打灯变道：若雷达/车机传感器在线且检测到后车急追(TTC < 门限)，则触发安全告警或阻断；
+          # 若车机离线或未装雷达(_alive=False / _ttc<=0)，决不阻断驾驶员自主变道，回退至原生BSD监控！
+          abort = _alive and (0.0 < _ttc < _thr)
+        else:
+          # 车机/自动发起的变道(OVERTAKE/ATC)：传感器失效/离线(_ttc <= 0) 或 TTC不足(< _thr)，一律严密阻断 Fail-Safe
+          abort = (_ttc <= 0.0) or (_ttc < _thr)
+
+        if abort:
           self.lane_change_state = LaneChangeState.off
           self.lane_change_direction = LaneChangeDirection.none
           self.trigger_name = "rear ttc abort"
           self.lane_change_audio(True, 6, 0)
-
         # 98% certainty
         if lane_change_prob < 0.02 and self.lane_change_ll_prob < 0.01:
           self.lane_change_state = LaneChangeState.laneChangeFinishing
