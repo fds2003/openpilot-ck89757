@@ -1,5 +1,4 @@
 import json
-import os
 import time
 import threading
 import socket
@@ -293,17 +292,28 @@ class AmapNaviServ:
     msg.amapNavi.rbDrel = 0 if (self.shared_data.main_rb_drel is None) else int(round(self.shared_data.main_rb_drel/100))
     msg.amapNavi.overtakeMode = self.shared_data.overtake_mode
     # 两侧后向雷达都参与，取最小 TTC（最保守）
-    # 传感器就绪且后方净空无逼近目标 -> 99.0 允许变道 (彻底解决 F-32-01 空车道误阻断)
-    # 仅在传感器完全未就绪/离线时 -> 0.0 失效阻断 (Fail-Safe)
     ttc_list = []
     for side in ("lb", "rb"):
       d = getattr(self.shared_data, f"main_{side}_drel", None)
       v = getattr(self.shared_data, f"{side}_vrel", None)
       if d is not None and abs(d) > 0 and v is not None and v < -0.1:
         ttc_list.append((abs(d) / 1000.0) / abs(v))
-    sensor_ready = bool(self.shared_data.lidar_l or self.shared_data.lidar_r or
-                        self.shared_data.main_lb_drel is not None or self.shared_data.main_rb_drel is not None)
-    ttc = min(ttc_list) if ttc_list else (99.0 if sensor_ready else 0.0)
+    # P0 裁决（M-12 补强）：仅当"确为净空"才用 99.0 放行，其余一律 0.0 失效阻断。
+    # 净空需同时满足：
+    #   1) 两侧后向均无目标：main_lb_drel / main_rb_drel 均为 None。
+    #      发布端 lbDrelValid / rbDrelValid 等价于这两个字段非 None；
+    #      lidar_data_timeout 在 1 秒内无更新即清空，数据新鲜度由该现成机制保证。
+    #   2) 两侧雷达在线（lidar_l and lidar_r）：由 _clients 每帧重算，
+    #      _clean_clients_thread 以 last_seen < 1.0s 淘汰断流客户端，断流即离线。
+    #   3) ttc_list 为空（无后车逼近）。
+    # 关键修正：main_*_drel 非 None 表示"检测到目标"，即使 vrel≈0（并排车）也不得
+    # 判净空。16aff86 的 sensor_ready 把"有目标"当成"传感器就绪"的正面证据，
+    # 会把贴身并行车辆当成空车道放行，这是本次裁决要消除的 fail-open。
+    no_rear_target = (self.shared_data.main_lb_drel is None and
+                      self.shared_data.main_rb_drel is None)
+    lidar_online = self.shared_data.lidar_l and self.shared_data.lidar_r
+    clear_lane = (not ttc_list) and no_rear_target and lidar_online
+    ttc = min(ttc_list) if ttc_list else (99.0 if clear_lane else 0.0)
     self.shared_data.behind_ttc = ttc
     msg.amapNavi.lidarBehindVdistTime = float(ttc)
 
@@ -996,10 +1006,7 @@ class AmapNaviServ:
   # ----------------------
   def _update_command(self, json_obj, ip):
     if self.shared_data.app_ip is not None and ip != self.shared_data.app_ip:
-      if os.environ.get("TEST_RELAX_MODE", "0") == "1" and ip == "127.0.0.1":
-        pass  # 测试态放行本机回环（验收测试时设置 TEST_RELAX_MODE=1）
-      else:
-        return  # 拒绝热点内第三方注入
+      return  # 拒绝热点内第三方注入；本机回环测试请在 fixture 中设置 app_ip
     with lock:
       idx = json_obj.get("index") or json_obj.get("seq")
       try:

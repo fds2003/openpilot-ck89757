@@ -956,7 +956,9 @@ class DesireHelper:
     overtake_mode = amapNavi.overtakeMode if amap_alive and amapNavi.overtakeMode in (0, 1, 2) else 1
     behind_ttc = amapNavi.lidarBehindVdistTime if amap_alive else 0.0
     ttc_threshold = {0: 1.8, 1: 2.5, 2: 3.5}.get(overtake_mode, 2.5)
-    rear_conflict = (behind_ttc <= 0.0) or (0.0 < behind_ttc < ttc_threshold)
+    # P0 裁决：与执行段车机/自动分支统一为 fail-safe 写法。ttc 发布端只产
+    # 0.0 / 正值 / 99.0，去掉冗余的 0.0 < 下限后行为不变，且对异常负值也判阻断。
+    rear_conflict = (behind_ttc <= 0.0) or (behind_ttc < ttc_threshold)
     if rear_conflict:
       auto_lane_change_trigger = False
       auto_lane_change_trigger_no_bsd = False
