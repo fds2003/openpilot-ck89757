@@ -388,6 +388,8 @@ class CarrotServ:
     if speed_kph < 0 or speed_kph > 160:
       print(f"[SPEED_LIMIT] out-of-range {speed_kph} (expect 0~160), blocked, nRoadLimitSpeed unchanged={self.nRoadLimitSpeed}")
       return
+    if 0 < speed_kph < 30:
+      speed_kph = 30
     self.nRoadLimitSpeed = speed_kph
     self.nRoadLimitSpeed_last = speed_kph
     print(f"[SPEED_LIMIT] accepted, nRoadLimitSpeed={self.nRoadLimitSpeed}")
