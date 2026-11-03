@@ -206,7 +206,7 @@ class AmapNaviServ:
     self.client_queues = {}  # {ip: Queue()}
     self.clients_copy = {}
     self.active_clients = {}
-
+    self.client_active = {}  # 保存客户端活跃状态，防止 _clean_clients_thread 报 AttributeError
     now = time.time()
     self.blinker_alive = False
     self.blinker_time = now

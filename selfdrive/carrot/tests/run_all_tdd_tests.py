@@ -27,6 +27,7 @@ def main():
   from test_custin_specs_and_interface import TestCustinSpecsAndInterface
   from test_mpv_smooth_lane_change import TestMpvSmoothLaneChange
   from test_c3_cooperative_modifications import TestC3CooperativeModifications
+  from test_amap_navi_networking import TestAmapNaviNetworking
 
   suite.addTests(loader.loadTestsFromTestCase(TestSecuritySwitches))
   suite.addTests(loader.loadTestsFromTestCase(TestLogRotation))
@@ -38,6 +39,7 @@ def main():
   suite.addTests(loader.loadTestsFromTestCase(TestCustinSpecsAndInterface))
   suite.addTests(loader.loadTestsFromTestCase(TestMpvSmoothLaneChange))
   suite.addTests(loader.loadTestsFromTestCase(TestC3CooperativeModifications))
+  suite.addTests(loader.loadTestsFromTestCase(TestAmapNaviNetworking))
   runner = unittest.TextTestRunner(verbosity=2)
   result = runner.run(suite)
 

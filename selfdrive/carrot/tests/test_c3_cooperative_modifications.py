@@ -85,6 +85,9 @@ class TestC3CooperativeModifications(unittest.TestCase):
         self.assertIn('"last_seen": now', text,
                       "discovery responder MUST write last_seen to prevent KeyError in _clean_clients_thread!")
 
+        # Check client_active initialization
+        self.assertIn("self.client_active = {}", text,
+                      "amap_navi MUST initialize self.client_active in __init__ to avoid AttributeError in _clean_clients_thread!")
     # =========================================================================
     # 5. selfdrive/carrot/amap_navi.py Command Parser Gating Logic Test
     # =========================================================================
