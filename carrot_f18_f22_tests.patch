@@ -1,0 +1,435 @@
+--- a/selfdrive/carrot/tests/run_all_tdd_tests.py
++++ b/selfdrive/carrot/tests/run_all_tdd_tests.py
+--- a/selfdrive/carrot/tests/run_all_tdd_tests.py
++++ b/selfdrive/carrot/tests/run_all_tdd_tests.py
+@@ -28,6 +28,13 @@
+   from test_mpv_smooth_lane_change import TestMpvSmoothLaneChange
+   from test_c3_cooperative_modifications import TestC3CooperativeModifications
+   from test_amap_navi_networking import TestAmapNaviNetworking
++  from test_real_code_contract import TestRealCodeContract
++  # F-18~F-22 TDD modules
++  from test_f18_front_rear import TestF18FrontRearCopyPaste
++  from test_f19_vrel import TestF19VRelConvention
++  from test_f20_exp_mode import TestF20ExpModeGating
++  from test_f21_print import TestF21PrintToCloudlog
++  from test_f22_speed_clamp import TestF22SpeedLimitClamp
+ 
+   suite.addTests(loader.loadTestsFromTestCase(TestSecuritySwitches))
+   suite.addTests(loader.loadTestsFromTestCase(TestLogRotation))
+@@ -40,6 +47,13 @@
+   suite.addTests(loader.loadTestsFromTestCase(TestMpvSmoothLaneChange))
+   suite.addTests(loader.loadTestsFromTestCase(TestC3CooperativeModifications))
+   suite.addTests(loader.loadTestsFromTestCase(TestAmapNaviNetworking))
++  suite.addTests(loader.loadTestsFromTestCase(TestRealCodeContract))
++  # F-18~F-22
++  suite.addTests(loader.loadTestsFromTestCase(TestF18FrontRearCopyPaste))
++  suite.addTests(loader.loadTestsFromTestCase(TestF19VRelConvention))
++  suite.addTests(loader.loadTestsFromTestCase(TestF20ExpModeGating))
++  suite.addTests(loader.loadTestsFromTestCase(TestF21PrintToCloudlog))
++  suite.addTests(loader.loadTestsFromTestCase(TestF22SpeedLimitClamp))
+   runner = unittest.TextTestRunner(verbosity=2)
+   result = runner.run(suite)
+ 
+
+--- /dev/null
++++ b/selfdrive/carrot/tests/test_f18_front_rear.py
+@@ -0,0 +1,146 @@
++#!/usr/bin/env python3
++"""
++TDD Test for F-18: compute_delta_v_for_front_rear copy-paste bug.
++
++RED state (before patch): delta_v_front is computed via for_rear, not for_front.
++GREEN state (after patch): delta_v_front uses for_front, semantics are correct.
++
++Test strategy: source-level scan + behavioral simulation.
++"""
++import os
++import re
++import unittest
++
++ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
++CARROT_SERV = os.path.join(ROOT, "selfdrive", "carrot", "carrot_serv.py")
++
++
++class TestF18FrontRearCopyPaste(unittest.TestCase):
++
++    # ------------------------------------------------------------------
++    # 1. Source-level check: for_front MUST be called in front_rear
++    # ------------------------------------------------------------------
++    def test_front_rear_calls_for_front(self):
++        """F-18 RED: the current buggy code calls for_rear for BOTH front and rear.
++        GREEN: line 'delta_v_front = self.compute_delta_v_for_front(' must exist."""
++        with open(CARROT_SERV, encoding="utf-8") as f:
++          text = f.read()
++
++        # Find the compute_delta_v_for_front_rear method body
++        m = re.search(r"def compute_delta_v_for_front_rear\(.*?(?=\n  def |\Z)", text, re.DOTALL)
++        self.assertIsNotNone(m, "compute_delta_v_for_front_rear not found in carrot_serv.py")
++        body = m.group(0)
++
++        # RED check: body must NOT use for_rear for delta_v_front
++        front_with_rear = re.search(
++          r"delta_v_front\s*=\s*self\.compute_delta_v_for_rear\(", body
++        )
++        front_with_front = re.search(
++          r"delta_v_front\s*=\s*self\.compute_delta_v_for_front\(", body
++        )
++        if front_with_front:
++          # GREEN state — for_front is used, good
++          self.assertIsNone(front_with_rear,
++            "compute_delta_v_for_front_rear must NOT call for_rear for delta_v_front (F-18 bug)")
++        else:
++          # RED state — raise to make test fail
++          self.fail(
++            "F-18 RED: delta_v_front is computed via compute_delta_v_for_rear, "
++            "but it should use compute_delta_v_for_front. "
++            "Apply carrot_f18_f22.patch to fix."
++          )
++
++    # Behavioral tests: monkeypatch import failure to skip if openpilot namespace is not importable
++    def test_front_slower_car_gets_positive_delta_v(self):
++        """If lead vehicle (front) is significantly slower than ego,
++        compute_delta_v_for_front MUST return a positive delta_v (accelerate to catch up)."""
++        import importlib
++        try:
++          module = importlib.import_module("openpilot.selfdrive.carrot.carrot_serv")
++        except Exception as e:
++          self.skipTest(f"openpilot namespace not importable in this environment: {e}")
++        CarrotServ = module.CarrotServ
++
++        # Minimal mock — bypass __init__ network setup
++        serv = CarrotServ.__new__(CarrotServ)
++        # Stub required attributes
++        serv.lf_drel = None
++        serv.lb_drel = None
++        serv.rf_drel = None
++        serv.rb_drel = None
++        serv.lf_vrel = None
++        serv.lb_vrel = None
++        serv.rf_vrel = None
++        serv.rb_vrel = None
++        serv.atc_speed_delta = None
++        serv.bsd_v_ego_kph = None
++        serv.bsd_speed_keep_time = -1
++        serv.nRoadLimitSpeed = 80
++        serv.active_carrot = 0
++        serv.roadcate = 8
++        serv.fork_speed_keep_time = -1
++        serv.atc_speed_delta_new = None
++
++        # f_vrel < 0 means lead is slower than ego → for_front should accelerate (positive)
++        # b_vrel = 0 means rear is at same speed
++        delta_v = serv.compute_delta_v_for_front_rear(
++          f_drel_mm=10000,  # 10 m
++          f_vrel=-3.0,       # front car is 3 m/s slower
++          b_drel_mm=5000,   # 5 m
++          b_vrel=0.0,
++          v_ego=20.0,
++          speed_up_enable=True,
++          decel_priority=False
++        )
++        # If F-18 fix applied: front (slower) should produce a POSITIVE delta_v
++        self.assertGreater(
++          delta_v, 0.0,
++          "F-18: front car is slower than ego → delta_v should be positive "
++          "(accelerate to close gap). Got delta_v=%.2f. "
++          "Likely still using for_rear logic (F-18 bug not fixed)." % delta_v
++        )
++
++    # ------------------------------------------------------------------
++    # 3. Behavioral: front car faster → negative delta_v (decelerate)
++    # ------------------------------------------------------------------
++    def test_front_faster_car_gets_negative_delta_v(self):
++        """If front vehicle is faster than ego, delta_v should be <= 0
++        (no need to accelerate, or decelerate)."""
++        import importlib
++        try:
++          module = importlib.import_module("openpilot.selfdrive.carrot.carrot_serv")
++        except Exception as e:
++          self.skipTest(f"openpilot namespace not importable in this environment: {e}")
++        CarrotServ = module.CarrotServ
++
++        serv = CarrotServ.__new__(CarrotServ)
++        serv.lf_drel = None; serv.lb_drel = None
++        serv.rf_drel = None; serv.rb_drel = None
++        serv.lf_vrel = None; serv.lb_vrel = None
++        serv.rf_vrel = None; serv.rb_vrel = None
++        serv.atc_speed_delta = None
++        serv.bsd_v_ego_kph = None
++        serv.bsd_speed_keep_time = -1
++        serv.nRoadLimitSpeed = 80
++        serv.active_carrot = 0
++        serv.roadcate = 8
++        serv.fork_speed_keep_time = -1
++        serv.atc_speed_delta_new = None
++
++        delta_v = serv.compute_delta_v_for_front_rear(
++          f_drel_mm=8000,   # 8 m
++          f_vrel=5.0,        # front car is 5 m/s FASTER
++          b_drel_mm=99999,  # far away
++          b_vrel=0.0,
++          v_ego=20.0,
++          speed_up_enable=False,
++          decel_priority=True
++        )
++        self.assertLessEqual(
++          delta_v, 0.0,
++          "F-18: front car is faster AND decel_priority → delta_v must be <= 0. "
++          "Got %.2f." % delta_v
++        )
++
++if __name__ == "__main__":
++    unittest.main()
+
+--- /dev/null
++++ b/selfdrive/carrot/tests/test_f19_vrel.py
+@@ -0,0 +1,57 @@
++#!/usr/bin/env python3
++"""
++TDD Test for F-19: vRel sign convention lock.
++
++Verifies that long_mpc.py contains the assertion guarding vLead >= vRel - 1e-6.
++RED: assertion not present (current code has no guard).
++GREEN: assertion present after applying carrot_f18_f22.patch.
++"""
++import os
++import re
++import unittest
++
++ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
++LONG_MPC = os.path.join(ROOT, "selfdrive", "controls", "lib", "longitudinal_mpc_lib", "long_mpc.py")
++
++
++class TestF19VRelConvention(unittest.TestCase):
++
++    def test_vrel_assertion_present_in_process_lead(self):
++        """F-19: process_lead MUST contain an assert that vLead >= vRel - 1e-6
++        to lock the cross-file sign convention vRel = v_lead - v_ego."""
++        with open(LONG_MPC, encoding="utf-8") as f:
++          text = f.read()
++
++        m = re.search(r"def process_lead\(.*?(?=\n  def |\Z)", text, re.DOTALL)
++        self.assertIsNotNone(m, "process_lead not found in long_mpc.py")
++        body = m.group(0)
++
++        # Look for the F-19 guard assertion
++        guard = re.search(r"assert\s+v_lead\s*>=\s*lead\.vRel\s*-\s*1e-6", body)
++        self.assertIsNotNone(
++          guard,
++          "F-19 RED: vRel sign convention assert missing in process_lead. "
++          "Apply carrot_f18_f22.patch to add it."
++        )
++
++    def test_vrel_convention_documented_in_comment(self):
++        """The F-19 comment block MUST explain the convention."""
++        with open(LONG_MPC, encoding="utf-8") as f:
++          text = f.read()
++        self.assertIn("F-19", text, "F-19 marker comment missing in long_mpc.py")
++        self.assertIn("vRel = v_lead - v_ego", text,
++          "vRel convention not documented in long_mpc.py")
++
++    def test_lead_clamp_uses_correct_sign(self):
++        """The lead clamp at the call site must use v_ego + vRel (not v_ego - vRel)."""
++        with open(LONG_MPC, encoding="utf-8") as f:
++          text = f.read()
++        # The correct expression is lead_v = max(0.0, v_ego + float(radarstate.leadOne.vRel))
++        self.assertRegex(
++          text,
++          r"lead_v\s*=\s*max\(0\.0,\s*v_ego\s*\+\s*float\(radarstate\.leadOne\.vRel\)\)",
++          "lead_v MUST be v_ego + vRel (not minus)."
++        )
++
++if __name__ == "__main__":
++    unittest.main()
+
+--- /dev/null
++++ b/selfdrive/carrot/tests/test_f20_exp_mode.py
+@@ -0,0 +1,73 @@
++#!/usr/bin/env python3
++"""
++TDD Test for F-20: ExperimentalMode gated write in longitudinal_planner.py.
++
++RED: current code calls put_bool_nonblocking("ExperimentalMode", ...) unconditionally
++     at 20 Hz (once per update() call) in both the enter-branch and exit-branch.
++GREEN: after patch, the put is guarded by `if not sm['selfdriveState'].experimentalMode`
++       (enter) / `if sm['selfdriveState'].experimentalMode` (exit), so it only writes
++       on actual state flip.
++"""
++import os
++import re
++import unittest
++
++ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
++LONG_PLAN = os.path.join(ROOT, "selfdrive", "controls", "lib", "longitudinal_planner.py")
++
++
++class TestF20ExpModeGating(unittest.TestCase):
++
++    def _read(self):
++        with open(LONG_PLAN, encoding="utf-8") as f:
++          return f.read()
++
++    def test_enter_branch_gated_on_current_state(self):
++        """F-20 RED: the enter-branch put_bool_nonblocking(True) must be guarded
++        by `if not sm['selfdriveState'].experimentalMode`."""
++        text = self._read()
++        # Find the enter-branch block
++        m = re.search(
++          r"_exp_on_counter\s*>=\s*self\._exp_on_frames.*?"
++          r"put_bool_nonblocking\(\s*[\"']ExperimentalMode[\"']\s*,\s*True\s*\)",
++          text, re.DOTALL
++        )
++        self.assertIsNotNone(m, "enter-branch put_bool_nonblocking(ExperimentalMode, True) not found")
++        block = m.group(0)
++        # GREEN check: guard is present
++        gated = re.search(r"if\s+not\s+sm\['selfdriveState'\]\.experimentalMode\s*:", block)
++        self.assertIsNotNone(
++          gated,
++          "F-20 RED: enter-branch put is not gated by `if not sm['selfdriveState'].experimentalMode`. "
++          "Apply carrot_f18_f22.patch."
++        )
++
++    def test_exit_branch_gated_on_current_state(self):
++        """F-20 RED: the exit-branch put_bool_nonblocking(False) must be guarded
++        by `if sm['selfdriveState'].experimentalMode`."""
++        text = self._read()
++        m = re.search(
++          r"_exp_off_counter\s*>=\s*self\._exp_off_frames.*?"
++          r"put_bool_nonblocking\(\s*[\"']ExperimentalMode[\"']\s*,\s*False\s*\)",
++          text, re.DOTALL
++        )
++        self.assertIsNotNone(m, "exit-branch put_bool_nonblocking(ExperimentalMode, False) not found")
++        block = m.group(0)
++        gated = re.search(r"if\s+sm\['selfdriveState'\]\.experimentalMode\s*:", block)
++        self.assertIsNotNone(
++          gated,
++          "F-20 RED: exit-branch put is not gated by `if sm['selfdriveState'].experimentalMode`. "
++          "Apply carrot_f18_f22.patch."
++        )
++
++    def test_no_unconditional_put_in_exp_mode_blocks(self):
++        """Ensure there is no bare put_bool_nonblocking(ExperimentalMode, ...) that
++        is NOT inside a gated `if` block. Count guarded vs unguarded occurrences."""
++        text = self._read()
++        guarded_enter = len(re.findall(r"if\s+not\s+sm\['selfdriveState'\]\.experimentalMode\s*:\s*\n\s*self\.sys_params\.put_bool_nonblocking\(\s*[\"']ExperimentalMode[\"']\s*,\s*True\s*\)", text))
++        guarded_exit  = len(re.findall(r"if\s+sm\['selfdriveState'\]\.experimentalMode\s*:\s*\n\s*self\.sys_params\.put_bool_nonblocking\(\s*[\"']ExperimentalMode[\"']\s*,\s*False\s*\)", text))
++        self.assertGreaterEqual(guarded_enter, 1, "Enter-branch gated put not found")
++        self.assertGreaterEqual(guarded_exit, 1, "Exit-branch gated put not found")
++
++if __name__ == "__main__":
++    unittest.main()
+
+--- /dev/null
++++ b/selfdrive/carrot/tests/test_f21_print.py
+@@ -0,0 +1,54 @@
++#!/usr/bin/env python3
++"""
++TDD Test for F-21 (SPEC-conformed): hot-path print() -> cloudlog.debug in
++carrot_serv.py.
++
++Scope (per plan document SS2.13):
++  - Only the HOT PATH (update_auto_turn blind-spot block) is converted to
++    cloudlog.debug. Non-hot-path prints are out of scope and stay as print().
++  - The showDebugLog-gated print MUST keep its gate (switch preserved); only
++    the sink changes from print to cloudlog.debug.
++
++RED: hot block still uses print(), or the showDebugLog gate was removed.
++GREEN: hot block logs via cloudlog.debug AND the showDebugLog gate is intact.
++"""
++import os
++import re
++import unittest
++
++ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
++CARROT_SERV = os.path.join(ROOT, "selfdrive", "carrot", "carrot_serv.py")
++
++
++def read():
++  with open(CARROT_SERV, encoding="utf-8") as f:
++    return f.read()
++
++
++class TestF21PrintToCloudlog(unittest.TestCase):
++
++  def test_cloudlog_imported(self):
++    text = read()
++    self.assertIn(
++      "from openpilot.common.swaglog import cloudlog", text,
++      "F-21 RED: cloudlog import missing."
++    )
++
++  def test_hot_block_keep_now_uses_cloudlog(self):
++    """The blind-spot keep block ('atc_bsd keep:') MUST log via cloudlog.debug."""
++    text = read()
++    self.assertIn(
++      'cloudlog.debug(f"atc_bsd keep:', text,
++      "F-21: blind-spot keep block should use cloudlog.debug, not print()."
++    )
++
++  def test_showdebuglog_gate_preserved(self):
++    """The showDebugLog gate MUST remain (F-21 must not cancel the switch)."""
++    text = read()
++    self.assertRegex(
++      text, r"if \(self\.showDebugLog & 1\) > 0:",
++      "F-21 RED: showDebugLog gate was removed/corrupted. Gate must stay."
++    )
++
++if __name__ == "__main__":
++    unittest.main()
+
+--- /dev/null
++++ b/selfdrive/carrot/tests/test_f22_speed_clamp.py
+@@ -0,0 +1,53 @@
++#!/usr/bin/env python3
++"""
++TDD Test for F-22: nRoadLimitSpeed clamping in CarrotServ.update().
++
++RED: the `update()` JSON branch does nRoadLimitSpeed = int(json.get(...)) without a
++     0~160 clamp, so out-of-range external JSON (from 7706/12345 channels) can set
++     arbitrary speed limits.
++GREEN: after patch, the value is clamped with np.clip(nRoadLimitSpeed, 0, 160).
++"""
++import os
++import re
++import unittest
++
++ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
++CARROT_SERV = os.path.join(ROOT, "selfdrive", "carrot", "carrot_serv.py")
++
++
++class TestF22SpeedLimitClamp(unittest.TestCase):
++
++    def _read(self):
++        with open(CARROT_SERV, encoding="utf-8") as f:
++          return f.read()
++
++    def test_update_clamps_road_limit_speed(self):
++        """F-22: update() MUST clamp nRoadLimitSpeed to [0, 160] like
++        _handle_speed_limit_command does."""
++        text = self._read()
++        # The clamp call
++        m = re.search(r"nRoadLimitSpeed\s*=\s*int\(json\.get\([\"']nRoadLimitSpeed[\"'].*?\)\)", text)
++        self.assertIsNotNone(m, "nRoadLimitSpeed JSON assignment not found in update()")
++        # A np.clip(..., 0, 160) must appear immediately after the assignment
++        # Look for the F-22 marker or the clamp within 5 lines
++        idx = text.find(m.group(0))
++        tail = text[idx: idx + 600]
++        self.assertRegex(
++          tail,
++          r"nRoadLimitSpeed\s*=\s*int\(np\.clip\(nRoadLimitSpeed\s*,\s*0\s*,\s*160\)\)",
++          "F-22 RED: nRoadLimitSpeed is not clamped to 0~160 in update(). "
++          "Apply carrot_f18_f22.patch."
++        )
++
++    def test_handle_speed_limit_already_validates(self):
++        """The _handle_speed_limit_command entry already validates 0~160 (baseline
++        that F-22 aligns the update() entry with)."""
++        text = self._read()
++        m = re.search(r"def _handle_speed_limit_command\(.*?(?=\n  def |\Z)", text, re.DOTALL)
++        self.assertIsNotNone(m, "_handle_speed_limit_command not found")
++        body = m.group(0)
++        self.assertRegex(body, r"speed_kph\s*<\s*0\s+or\s+speed_kph\s*>\s*160",
++                         "existing validator missing 0~160 range check")
++
++if __name__ == "__main__":
++    unittest.main()

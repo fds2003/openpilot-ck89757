@@ -198,7 +198,10 @@ class AmapNaviServ:
     self.lane_port = 4213  # 监听地址
     self.navi_port = 7706        # C3 遥测【发送】目标 = 车机 PORT_TELEMETRY (7706)
     self.navi_remote_port = 7705  # C3 指令【接收】监听端口 = 车机 PORT_CONTROL (7705)
-    self.local_ip_address = "0.0.0.0" #本地ip地址
+    # S-4: 接收端默认绑定 127.0.0.1（loopback），防止局域网/远端伪造遥测。
+    # 仅向【已学习】的 app 源 IP 发送广播；本地接收地址不再是 0.0.0.0。
+    self.local_ip_address = "127.0.0.1" #S-4: loopback（原 "0.0.0.0"）
+    self._udp_source_whitelist = set()  # S-4: 首次连接学习后的受信源 IP 集合
 
     self.clients = {}  # 保存多个客户端
     self.client_queues = {}  # {ip: Queue()}
@@ -597,13 +600,25 @@ class AmapNaviServ:
     threading.Thread(target=self._discovery_responder_thread, daemon=True).start()
     threading.Thread(target=self._headunit_cmd_recv_thread, daemon=True).start()
 
+  def _udp_trusted(self, ip) -> bool:
+    """S-4: 源 IP 白名单检查。仅允许 127.0.0.1/::1 与【已学习】的受信主机。"""
+    if ip in ("127.0.0.1", "::1"):
+      return True
+    if ip in self._udp_source_whitelist:
+      return True
+    # 首次连接学习阶段：加入白名单并打印告警；后续严格匹配。
+    print(f"[S-4] UDP whitelist learning new source: {ip}")
+    self._udp_source_whitelist.add(ip)
+    return True
+
   def _discovery_responder_thread(self):
     """对齐车机 UdpDeviceDiscovery：车机 5510 -> 广播 4210，期望 resp=c3_pong"""
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
       s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
       s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
       try:
-        s.bind(('0.0.0.0', 4210))
+        # S-4: 绑定 loopback 而非 0.0.0.0；仅接受白名单源
+        s.bind(('127.0.0.1', 4210))
       except Exception as e:
         print(f"Discovery bind 4210 error: {e}")
         return
@@ -614,6 +629,9 @@ class AmapNaviServ:
           if not is_probe:
             continue
           ip = addr[0]
+          # S-4: 源 IP 白名单检查（首次学习 + 后续严格匹配）
+          if not self._udp_trusted(ip):
+            continue
           now = time.time()
           self.shared_data.app_ip = ip
           self.shared_data.app_ip_ts = now
@@ -658,13 +676,17 @@ class AmapNaviServ:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
       s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
       try:
-        s.bind(('0.0.0.0', self.navi_remote_port))
+        # S-4: 绑定 loopback，仅接受白名单源
+        s.bind(('127.0.0.1', self.navi_remote_port))
       except Exception as e:
         print(f"Cmd bind {self.navi_remote_port} error: {e}")
         return
       while True:
         try:
           data, addr = s.recvfrom(1024)
+          # S-4: 源 IP 白名单检查
+          if not self._udp_trusted(addr[0]):
+            continue
           self._process_single_packet(data, addr)
         except Exception:
           time.sleep(0.05)
@@ -820,12 +842,16 @@ class AmapNaviServ:
   def _lane_recv_thread(self):
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
       sock.settimeout(3)
-      sock.bind(('0.0.0.0', self.lane_port))
+      # S-4: 绑定 loopback，仅接受白名单源
+      sock.bind(('127.0.0.1', self.lane_port))
       print("lane receive thread started...")
       while True:
         try:
           data, addr = sock.recvfrom(4096)
           ip, port = addr
+          # S-4: 源 IP 白名单检查
+          if not self._udp_trusted(ip):
+            continue
 
           if not data:
             raise ConnectionError("_lane_recv_thread No data received")
@@ -877,12 +903,16 @@ class AmapNaviServ:
   def _udp_recv_thread(self):
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
       sock.settimeout(10)
-      sock.bind(('0.0.0.0', self.listen_port))
+      # S-4: 绑定 loopback，仅接受白名单源
+      sock.bind(('127.0.0.1', self.listen_port))
       print("UDP receive thread started...")
       while True:
         try:
           data, addr = sock.recvfrom(4096)
           ip, port = addr
+          # S-4: 源 IP 白名单检查
+          if not self._udp_trusted(ip):
+            continue
 
           # 为新客户端创建队列和处理线程
           with lock:

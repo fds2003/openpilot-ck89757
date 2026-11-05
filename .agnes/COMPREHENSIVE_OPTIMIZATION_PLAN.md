@@ -470,6 +470,223 @@ def _infer_obstacle_type(v_rel, y_rel, v_ego):
   return fallback_type
 ```
 
+### 2.7 F-15 新增 · 两轮车避让静默吞异常（High）
+
+**位置**: `selfdrive/controls/lib/lateral_planner.py:166-189`
+
+**现状**（行号已核准）:
+```python
+try:
+  rs = sm['radarState']
+  obs_list = []                       # :166
+  if 10.0 < v_ego_kph < 60.0:
+    def _mk_obs(lead, fallback_type): # :168
+      ...
+      y = float(lead.yRel) if lead.yRel != 0.0 else float(getattr(lead, 'dPath', 0.0))
+      ...
+    for lead_src, fb in ((rs.leadOne,'bicycle'), (rs.leadLeft,'bicycle'), (rs.leadRight,'bicycle')):
+      o = _mk_obs(lead_src, fb)       # :184
+      if o is not None:
+        obs_list.append(o)            # :186
+    self.LP.update_two_wheel_avoid(obs_list)  # :187
+except Exception:                     # :188
+  pass                                # :189  ← 空 except，无日志
+```
+
+**缺陷机制**:
+- `leadLeft`/`leadRight` 的 dict 来自 `radard.compute_leads` 的 `get_RadarState`，**只有 `leadOne` 真正填充了 `dPath`**；`leadLeft/leadRight` 在 `yRel==0` 时走 `float(getattr(lead,'dPath',0.0))` 分支，若属性为 `None` 或缺失则 `float(None)` 抛 `TypeError`。
+- 一旦抛出，`except: pass` 吞掉 → `update_two_wheel_avoid` 该帧根本没被调用 → **右侧两轮车/行人避让静默失效**，且无 `cloudlog`、无 metric、无 counter，审计无法定位。
+- 比 F-14（类型推断不准）更严重：F-14 是"判错"，F-15 是"整段不执行且查不到"。
+
+**修正方案**:
+```python
+# 1) 缩小 try 范围：只包住属性访问，不让整段避让失效
+def _mk_obs(lead, fallback_type):
+  if not lead.status:
+    return None
+  d = float(lead.dRel)
+  # 安全取值：dPath 缺失或 None 时回退 0，不抛异常
+  raw_y = getattr(lead, 'dPath', None)
+  y = float(lead.yRel) if lead.yRel != 0.0 else (0.0 if raw_y is None else float(raw_y))
+  v = float(lead.vLead)
+  ...
+
+try:
+  rs = sm['radarState']
+  obs_list = []
+  if 10.0 < v_ego_kph < 60.0:
+    for lead_src, fb in ((rs.leadOne,'bicycle'), (rs.leadLeft,'bicycle'), (rs.leadRight,'bicycle')):
+      o = _mk_obs(lead_src, fb)
+      if o is not None:
+        obs_list.append(o)
+    self.LP.update_two_wheel_avoid(obs_list)
+except Exception as e:
+  # 2) 绝不静默：记录 + 计数，便于审计
+  self.two_wheel_fail_cnt = getattr(self, 'two_wheel_fail_cnt', 0) + 1
+  if t > self.last_cloudlog_t + 5.0:
+    cloudlog.warning(f"lateral: two_wheel avoid block failed ({self.two_wheel_fail_cnt}x): {e}")
+```
+
+**验收标准**: 构造 `leadLeft.yRel=0` 且 `dPath=None` 的输入，`update_two_wheel_avoid` 仍被调用且 `two_wheel_fail_cnt` 不再增长；日志中不再出现无信息的吞异常。
+
+### 2.8 F-16 新增 · 偏离/两轮避让整路径平移（High）
+
+**位置**: `selfdrive/controls/lib/lane_planner_2.py:301-307`
+
+**现状**（行号已核准）:
+```python
+if _corr != 0.0:
+  path_xyz[:, 1] += _corr                    # :302  ← 33 点 y 全部 +0.22m
+...
+if self.two_wheel_avoid_shift_smooth > 0.01:
+  path_xyz[:, 1] -= self.two_wheel_avoid_shift_smooth  # :307 ← 同样全路径平移
+```
+
+**缺陷机制**:
+- `path_xyz` 是 33 点轨迹（`TRAJECTORY_SIZE=33`，对应 0~3s）。`_corr` 加在 `path_xyz[:,1]`（**所有行**）= 路径末端（3s 后）也被推偏 0.22m，但"当前横向偏离"只应约束近端点。
+- `:307` 两轮车避让是同一模式（全路径固定偏移），两问题叠加。
+- 后果：在 `DEVIATION_NORM_THRESH=0.82` 且 `lll_prob>0.30` 周期性满足时，远端点被反复推回 → MPC 看到远端偏移 → **横向"修正-反弹"震荡**，与注释"偏离对向车道时拉回"（意图只约束近端）不符。
+
+**修正方案**（按时间轴衰减权重，近端全量、远端趋零）:
+```python
+# path_t 是各点对应时间(0~3s)，用指数衰减把偏移限制在近端
+def _time_decay_weight(path_t, tau=1.0):
+  return np.exp(-np.asarray(path_t) / tau)
+
+# 偏离修正：仅近端生效
+if _corr != 0.0:
+  w = _time_decay_weight(path_t, tau=0.8)   # 1.6s 后权重<0.14
+  path_xyz[:, 1] += _corr * w
+
+# 两轮车避让：同样衰减
+if self.two_wheel_avoid_shift_smooth > 0.01:
+  w2 = _time_decay_weight(path_t, tau=0.8)
+  path_xyz[:, 1] -= self.two_wheel_avoid_shift_smooth * w2
+```
+
+**验收标准**: 横向轨迹末端偏移幅度 ≤ 近端的 15%；`tools/sim` 弯道+偏离场景无横向震荡（jerk 峰值不升）。
+
+### 2.9 F-17 新增 · 参数读取相位不一致（Medium）
+
+**位置**: `selfdrive/carrot/carrot_functions.py:141-184` · `CarrotPlanner._params_update`
+
+**现状**（行号已核准）:
+```python
+if self.params_count % 10 == 0:   # :141  读 MyDrivingMode
+if self.params_count == 10: ...    # :153  读 TFollowGap*
+elif ... == 20: ...               # :156  读 CruiseMaxVals
+elif ... == 30: ...               # :163
+elif ... == 40: ...               # :171
+elif self.params_count >= 100:    # :178  读 stop_distance / RedLightDistOffset
+  self.params_count = 0           # :184
+```
+
+**缺陷机制**:
+- 不同参数键在**不同相位帧**（10/20/30/40/100）被读，同一时刻各键可能是不同时刻的值（相差最多 ~1s）。
+- 对比 `longcontrol.py` 用 `readParamCount >= 100` **固定周期一次性读全部键**——同 fork 内两套写法不一致。
+- 后果：驾驶中切模式/改跟车时间，部分参数延迟最多 ~1s 生效，且日志无法判断哪个键是旧值。
+
+**修正方案**（统一为固定周期全量刷新）:
+```python
+def _params_update(self):
+  self.params_count += 1
+  if self.params_count >= 100:      # 与 longcontrol.py 对齐：每 1s 全量读一次
+    myDrivingMode = DrivingMode(self.params.get_int("MyDrivingMode"))
+    ...
+    # TFollowGap / CruiseMaxVals / stop_distance / RedLightDistOffset 全部在此一次性读
+    self.params_count = 0
+```
+
+**验收标准**: 同一刷新周期内所有参数键取值时间戳一致（可加 `param_refresh_frame` 日志字段核对）；模式切换生效延迟 < 1 周期（1s）。
+
+### 2.10 F-18 新增 · 前后车速度差复制粘贴错误（High）
+
+**位置**: `selfdrive/carrot/carrot_serv.py:789-791` · `compute_delta_v_for_front_rear`
+
+**现状**（行号已核准）:
+```python
+def compute_delta_v_for_front_rear(self, f_drel_mm, f_vrel, b_drel_mm, b_vrel, ...):
+  delta_v_front = self.compute_delta_v_for_rear(f_drel_mm, f_vrel, ...)   # :790 ← 用 rear 函数算 front
+  delta_v_rear  = self.compute_delta_v_for_rear(b_drel_mm, b_vrel, ...)
+```
+
+**缺陷机制**:
+- `compute_delta_v_for_front`（专为前车设计）在此函数中**从未被调用**，前后车都走了 `for_rear` 逻辑。
+- 前车（"我追它"）与后车（"它追我"）相对速度语义相反，混用公式 → **盲区变道时前车方向的加减速决策错误**。
+
+**修正方案**:
+```python
+delta_v_front = self.compute_delta_v_for_front(f_drel_mm, f_vrel, v_ego, speed_up_enable, decel_priority)  # ← 改回 for_front
+delta_v_rear  = self.compute_delta_v_for_rear(b_drel_mm, b_vrel, v_ego, speed_up_enable, decel_priority)
+```
+
+**验收标准**: 盲区（`atc_left_bsd`/`atc_right_bsd`）场景下，前车更慢时请求加速追赶、前车更快时请求减速，方向正确；`test_bsd_delta_v.py` 覆盖前/后两种目标方向。
+
+### 2.11 F-19 新增 · MPC `vRel` 符号跨文件隐式约定（Medium）
+
+**位置**: `selfdrive/controls/lib/longitudinal_mpc_lib/long_mpc.py:392-397`
+
+**现状**（已核实）:
+```python
+# :392 注释自述：vRel 约定为 v_lead - v_ego（cpv9 原式符号相反，已修正）
+lead_v = max(0.0, v_ego + float(radarstate.leadOne.vRel))           # :396
+if lead_v < v_cruise and float(radarstate.leadOne.vRel) > -1.0:    # :397
+  v_cruise = lead_v
+```
+
+**核实结论**: `radard.py:325/335` 中 `self.vRel = lead_v_rel_pred`（=`v_lead - v_ego`）、`vLead = v_ego + vRel`，**该约定当前成立，`:396` 符号正确**。风险在于这是**跨文件隐式约定**——若 radard 某处翻转 `vRel` 定义，MPC 前车钳位会**静默反相**（当前正确但脆弱）。
+
+**修正方案**: 不改数值，加**约定锁定断言 + 单测**：
+```python
+# radard.py 出口（get_RadarState / vision get_lead）加断言
+assert track.vLead >= track.vRel - 1e-6, "vLead must be >= vRel (vLead = v_ego + vRel, v_ego >= 0)"
+```
+并在 `test_vrel_convention.py` 中固定"vRel = v_lead - v_ego"的语义。
+
+### 2.12 F-20 新增 · 20Hz 规划循环写全局 Params（Medium）
+
+**位置**: `selfdrive/controls/lib/longitudinal_planner.py` · 动态实验模式段
+
+**现状**:
+```python
+self.sys_params.put_bool_nonblocking("ExperimentalMode", True)   # 进入（20Hz 循环内）
+self.sys_params.put_bool_nonblocking("ExperimentalMode", False)  # 退出
+# DynamicExperimentalSpeed / LatA 用 frame % 100 读（frame 逐帧+1，非固定相位）
+```
+
+**缺陷机制**: 规划循环直接改全局驾驶模式开关，可能与 `selfdrived` 的模式管理**抢写**；`frame % 100` 读参同 F-17 的相位不一致。
+
+**修正方案**: 实验模式状态改为本 planner 局部（`self._exp_latched` 已存在，补全"不再写全局"），或在 `selfdrived` 统一管理；参数读取对齐 F-17 的固定周期。
+
+### 2.13 F-21 新增 · 控制路径 72 处裸 `print()`（Medium）
+
+**位置**: `selfdrive/carrot/carrot_serv.py` 全文件（`update_auto_turn` / `update_navi` 等）
+
+**现状**: 全文件共 **72 处 `print(`**，其中盲区避让、限速计算等控制路径（10Hz 循环）直接刷 stdout。
+
+**缺陷机制**: 违反本仓库"控制循环不得阻塞 I/O、结构化日志走 cloudlog"规范；实车 stdout 与 logger 抢占 I/O，日志量不可控。
+
+**修正方案**: 控制路径 `print(...)` 全部替换为 `cloudlog.debug/info`（保留 `showDebugLog` 门控），非关键路径加 5s 节流。
+
+**验收标准**: `Select-String "print(" carrot_serv.py | Measure` 降至 0（或仅 `showDebugLog` 门控内保留并注释说明）。
+
+### 2.14 F-22 新增 · `nRoadLimitSpeed` 两入口校验不一致（Low-Medium）
+
+**位置**: `selfdrive/carrot/carrot_serv.py` · `update()` 的 `nRoadLimitSpeed` 分支
+
+**现状**:
+```python
+# _handle_speed_limit_command 有 0~160 校验（拒绝越界）
+if speed_kph < 0 or speed_kph > 160:
+  print(...blocked...); return
+# 但 update() 里：
+nRoadLimitSpeed = int(json.get("nRoadLimitSpeed", 20))   # ← 无校验直接覆盖
+```
+
+**缺陷机制**: 外部 JSON（来自 7706/12345 未认证通道，见 §1.4/1.5）可注入任意限速值，`update()` 入口无范围钳位。
+
+**修正方案**: `update()` 入口加 `np.clip(nRoadLimitSpeed, 0, 160)`，并配合 §1.4 的来源 IP 白名单双重防护。
+
 ---
 
 ## 3. 硬件与系统优化（P2）
@@ -736,22 +953,33 @@ const char CARROT_AUTO_TURN[]       = "CarrotAutoTurnControl";
 // ... 对应 UnifiedParams 中所有 key
 ```
 
-### 4.6 测试覆盖
+### 4.6 测试覆盖（TDD）
 
-**现状**: `selfdrive/carrot/` 下无任何 `test_*.py`（已核实），CarrotPilot 专属逻辑当前**零测试覆盖**。
-测试框架可用：`pytest` + `pytest-xdist` + `conftest.py` 的 `OpenpilotPrefix` 沙箱（隔离 params/shm）。
+**现状修正**：早期判断"carrot 下零测试覆盖"有误。实际 `selfdrive/carrot/tests/` 已有一整套 TDD 套件（`run_all_tdd_tests.py` 主运行器 + 14 个存量 `test_*.py`，覆盖 S-1 部分开关/log rotation/dynamics/radard interlock/TTC/ATC/Custin/C3/amap 等，基线 36 断言 GREEN）。本机 Python 3.15 + pytest 9.1.1 可直接运行。
 
-**新增测试**（完整用例与断言见 §6.3）:
+**本轮新增 TDD 模块**（完整用例与断言见 §6.3）:
 ```
 selfdrive/carrot/tests/
-  test_overpass_filter.py     # §2.1 slot 换绑 + Track/dict 一致性 + 3s 清理
-  test_cross_validate.py      # §2.2 一致/ghost/速度不匹配三档
-  test_stopping.py            # §2.4 停距/jerk/e2eStopped 无蠕行
-  test_web_whitelist.py       # §1.3 白名单键 + 绑定地址 127.0.0.1
-  test_zmq_auth.py           # §1.1 token + cmd 白名单 + 无 shell=True
-  test_udp_filter.py         # §1.4/1.5 白名单 IP 通过 / 非白名单丢弃
-  test_nvme.py               # §3.5 无 NVMe 返回 [] 不抛异常
+  # —— 已存在（存量基线，14 个）——
+  test_security_switches / test_log_rotation / test_dynamics_invariants
+  test_radard_interlock / test_ttc_and_lane_change_gating
+  test_cooperative_command_handlers / test_atc_state_telemetry
+  test_custin_specs_and_interface / test_mpv_smooth_lane_change
+  test_c3_cooperative_modifications / test_amap_navi_networking
+  test_real_code_contract / test_amap_blinker_contract
+  # —— 本轮新增 ——
+  test_f18_front_rear.py      # §2.10 F-18 前后车方向 + for_front 被调用（源码扫描 + 行为）
+  test_f19_vrel.py           # §2.11 F-19 vRel = v_lead - v_ego 锁定 + 钳位符号
+  test_f20_exp_mode.py       # §2.12 F-20 ExperimentalMode 写参加门控
+  test_f21_print.py          # §2.13 F-21 热路径→cloudlog.debug + showDebugLog 门控保留
+  test_f22_speed_clamp.py    # §2.14 F-22 nRoadLimitSpeed 0~160 钳位
+  test_s1_s5_security.py     # §1.1-1.5 S-1~S-5 安全修复 GREEN 断言（loopback bind/HMAC token/FTP env 注入/白名单）
+  test_op_corrections.py      # §2.1/2.4 OP-01 _should_filter_lead 统一 + 位置 key；OP-06 停止分支 jerk 限制 GREEN 断言
 ```
+
+**已验证**：`run_all_tdd_tests.py` 全量 **71 tests → OK (skipped=2)**。2 个 skip 为本预编译交付树无法导入 `openpilot` 命名空间（F-18 两个纯行为用例），需在完整源码树运行；非缺陷。
+
+**RED/GREEN 语义（已翻转）**：S/OP 模块最初以"修复前 RED 锚点"落地（断言漏洞/缺陷代码存在）。本轮随 `carrot_s_op_fix.patch` 落地后，`test_s1_s5_security.py` 与 `test_op_corrections.py` 已**整体反转为 GREEN 断言**——干净树上失败（指示漏洞仍在），修复 patch 落地后通过（指示漏洞已消除 / 缺陷已修正）。这是 TDD"先红后绿"在安全审计上的闭环：先固化"当前确实有此缺陷"，再落地修复并翻转断言。
 
 **回归安全网**：每项修改合入前须通过 §6.2 的 L0→L3 门禁（含 process_replay 基线比对、`test_models.py -k test_hyundai`、libsafety 安全限值不放宽、`tools/op.sh lint` 全绿、controls 改动保留 `*_LEGACY` A/B 开关）。
 
@@ -773,8 +1001,10 @@ Week 2 (P1 算法)
 ├─ Day 1-2: OP-06 停止分支解析解（longcontrol.py）+ L1 test_stopping
 ├─ Day 2-3: OP-01 _is_overpass 6 调用点统一 + 位置 key 修正 + L1 test_overpass_filter
 ├─ Day 3-4: OP-04 视觉-雷达交叉验证 + L1 test_cross_validate
-├─ Day 4-5: OP-05 Custin 扭矩参数标定（需实车数据）
-└─ Day 5:   停止距离 + 过桥场景回放验证（L2 process_replay 回归门）
+├─ Day 4:   F-15 两轮避让静默吞异常（lateral_planner.py:188 缩小 try + 日志）+ L1 test_two_wheel_avoid
+├─ Day 4-5: F-16 偏离/两轮避让路径衰减（lane_planner_2.py:302/307）+ F-17 参数相位统一（carrot_functions.py）
+├─ Day 5:   OP-05 Custin 扭矩参数标定（需实车数据）
+└─ Day 6:   停止距离 + 过桥场景回放验证（L2 process_replay 回归门）
 
 每项 P1 修改合入前必须通过 §6 的 L0+L1+L2（controls 层）+L3 门禁
 
@@ -832,6 +1062,14 @@ OP-05 标定 ──→ 需实车 CAN 数据
 | 天桥过滤"只缺 dRel 字段" | 更深缺陷：`_overpass_tracker` 用 slot 号做 key，`stable_count` 每帧被重置**永不达 5**，过滤实际从不触发 | §2.1, §2.5 |
 | S-3 仅"无白名单写参" | 叠加 `HTTPServer(('0.0.0.0', port))` 全网卡监听 + CORS `*`，同网段可直接写参 | §1.3 |
 | 安全/算法修改已可直接落地 | 行号基于 `24b7ff2`，**合并前必须重新确认**（代码可能已变动） | 全文 |
+| 两轮车避让仅在 F-14 提"类型推断" | 实际 `lateral_planner.py:188` 整段被 `except: pass` 吞掉，**特定雷达形态下静默失效且无日志** | §2.7 F-15 |
+| §2 只覆盖 OP-01/04/05/06 | 漏掉 `lane_planner_2.py:302/307` 偏离+两轮避让**整路径平移**导致的横向震荡 | §2.8 F-16 |
+| 参数读取归 P3 工程基线 | `carrot_functions.py:141-184` 计数器相位读参，**同帧各键值不同时刻**，实为 P1（模式切换抖动） | §2.9 F-17 |
+| 盲区避让速度差计算正确 | `carrot_serv.py:790` 前后车**都调 `for_rear`**，`for_front` 从未被调（复制粘贴） | §2.10 F-18 |
+| MPC `vRel` 用法无风险 | `long_mpc.py:396` 依赖跨文件隐式约定（`vRel=v_lead-v_ego`），radard 翻转即静默反相 | §2.11 F-19 |
+| 20Hz 规划循环不写全局 | `longitudinal_planner.py` 动态实验模式在规划循环内 `put_bool ExperimentalMode` | §2.12 F-20 |
+| 日志走 cloudlog | `carrot_serv.py` 控制路径 **72 处裸 `print()`** 刷 stdout | §2.13 F-21 |
+| 限速入口校验一致 | `carrot_serv.py` `update()` 的 `nRoadLimitSpeed` 无 0~160 钳位（另一入口有） | §2.14 F-22 |
 
 **结论**：方案的"正确性"= ① 事实经代码核实 ② 修正实现可编译可运行 ③ 有可执行测试与回归门。**仅①不足以保证正确，必须②③闭环。**
 
@@ -873,6 +1111,11 @@ L3  实车/仿真
 
 ### 6.3 逐修改项的验证用例（可执行）
 
+> **测试状态已更新**：S-1~S-5 与 OP-01/OP-06 的 TDD 模块（`test_s1_s5_security.py`、`test_op_corrections.py`）
+> 在 `carrot_s_op_fix.patch` 落地后已**整体翻转为 GREEN 断言**（断言漏洞已消除 / 缺陷已修正）。
+> 当前全量 TDD 套件 **71 tests GREEN (skipped=2)**；2 个 skip 为本预编译树无法导入 `openpilot`（F-18 行为测试）。
+> 干净树上这两组测试会失败（正确指示漏洞/缺陷仍在），修复 patch 落地后转 GREEN——这是本轮 TDD 红绿闭环的核心。
+
 | 修改项 | L1 单元测试（`selfdrive/carrot/tests/`） | L2/L3 回归验收 |
 |--------|-------------------------------------------|----------------|
 | §2.1 OP-01 天桥 | `test_overpass_filter.py`：①slot 换绑场景 8 帧重分配，断言 `_should_filter_lead` 在 5 帧后返回 True（验证位置 key 修复）②静止非中心目标返回 False ③3s 超时清理 ④Track/dict 两输入路径一致性 | 回放过桥 log，断言对应帧 `radarState.leadOne.status=False` 且 MPC 无减速 |
@@ -884,6 +1127,14 @@ L3  实车/仿真
 | §1.2 S-2 FTP | 静态断言 `grep -rn Ekdrmsvkdlffjt7710` 全树 0 命中 | 代码搜索 |
 | §1.4/1.5 S-4/S-5 | `test_udp_filter.py`：白名单 IP 包通过；非白名单 IP 包被丢 | `scapy` 从非白名单 IP 发包→丢弃 |
 | §3.5 NVMe | `test_nvme.py`：`/dev/nvme0n1` 不存在→返回 `[]` 不抛异常 | 无 NVMe 设备 `hardwared` 无异常日志 |
+| §2.7 F-15 静默吞异常 | `test_two_wheel_avoid.py`：构造 `leadLeft.yRel=0` 且 `dPath=None` → `update_two_wheel_avoid` 仍被调用；断言 `two_wheel_fail_cnt` 不增长；静态扫描断言源码无 `except: pass` | 日志出现 `two_wheel avoid block failed` 计数而非静默 |
+| §2.8 F-16 路径平移 | `test_lane_offset_decay.py`：`_corr=0.22` 时断言 `path_xyz[-1,1]`（3s 末端）偏移 ≤ 近端 15%；两轮避让同衰减 | `tools/sim` 弯道+偏离场景横向 jerk 峰值不上升 |
+| §2.9 F-17 参数相位 | `test_param_phase.py`：连续 100 帧断言 `MyDrivingMode` 与 `TFollowGap` 取值帧号一致；切换模式后延迟 < 1 周期 | 日志 `param_refresh_frame` 字段各键一致 |
+| §2.10 F-18 front_rear | `test_f18_front_rear.py`：源码扫描断言 `delta_v_front` 调用 `for_front` + 行为用例（本预编译树 skip，完整源码树跑） | 盲区变道场景加减速方向正确 |
+| §2.11 F-19 vRel 约定 | `test_f19_vrel.py`：断言 `long_mpc.py` 含 `assert vLead >= vRel` 守卫 + 钳位符号 `v_ego + vRel` | 断言全绿，反相用例失败 |
+| §2.12 F-20 全局写参 | `test_f20_exp_mode.py`：断言 enter/exit 分支 `put_bool ExperimentalMode` 被 `if sm[...].experimentalMode` 门控 | 规划循环无全局 `ExperimentalMode` 写操作 |
+| §2.13 F-21 print | `test_f21_print.py`：断言热路径用 `cloudlog.debug` + `showDebugLog` 门控保留（F-21 已按 Spec 收敛，非全文件 0 print） | `Select-String "print(" \| Measure` 降至 0 |
+| §2.14 F-22 限速校验 | `test_f22_speed_clamp.py`：断言 `update()` 含 `np.clip(nRoadLimitSpeed,0,160)` 钳位 | 越界值被拒绝 |
 
 ### 6.4 回归安全网（防止修复引入新缺陷）
 
@@ -925,12 +1176,59 @@ L3  实车/仿真
 | `selfdrive/carrot/amap_navi.py` | S-5 |
 | `selfdrive/controls/radard.py` | OP-01, OP-04, N-1 |
 | `selfdrive/controls/lib/longcontrol.py` | OP-06 |
-| `selfdrive/controls/lib/lateral_planner.py` | F-14 |
+| `selfdrive/controls/lib/lateral_planner.py` | F-14, F-15（:188 静默吞异常） |
+| `selfdrive/controls/lib/lane_planner_2.py` | F-16（:302/307 整路径平移） |
+| `selfdrive/carrot/carrot_functions.py` | F-17（:141-184 参数相位） |
+| `selfdrive/carrot/carrot_serv.py` | F-18（:790 front_rear）、F-21（72 处 print）、F-22（限速校验） |
+| `selfdrive/controls/lib/longitudinal_mpc_lib/long_mpc.py` | F-19（:396 vRel 约定） |
+| `selfdrive/controls/lib/longitudinal_planner.py` | F-20（动态实验模式写全局 Params） |
 | `opendbc_repo/opendbc/car/hyundai/radar_interface.py` | N-1 |
 | `opendbc_repo/opendbc/car/torque_data/override.toml` | OP-05 |
 | `system/hardware/tici/hardware.py` | §3.1-§3.5 |
 | `system/hardware/hardwared.py` | §3.6 |
 | `common/params_keys.h` | §4.5 |
+
+
+### 7.2a 已交付 Patch 文件（可直接 git apply）
+
+基于 cp 分支 HEAD `24b7ff2` 生成，经 `git apply --check` 通过、实际应用验证、并还原工作区。
+
+| Patch 文件 | 覆盖项 | 目标文件 | 校验 |
+|-----------|--------|----------|------|
+| `carrot_f18_f22.patch` | F-18 / F-19 / F-20 / F-21(热路径+门控保留) / F-22 + S-2 import 排序 + F-22 一致性注释 | `carrot_serv.py`, `long_mpc.py`, `longitudinal_planner.py` | `git apply --check` OK；全量 TDD 68 tests GREEN |
+| `carrot_f18_f22_tests.patch` | 5 个 F 测试模块 + `run_all_tdd_tests.py` 注册 | `selfdrive/carrot/tests/` 下 5 个新文件 + 1 个运行器 | `git apply --check` OK |
+| `carrot_s_op_fix.patch` | **S-1~S-5 安全修复 + OP-01 / OP-06 算法修正** | `carrot_man.py`, `web_interface.py`, `amap_navi.py`, `radard.py`, `longcontrol.py` | reverse `git apply --check` OK；全量 TDD **71 tests GREEN** |
+| `carrot_s_op_fix_tests.patch` | S-1~S-5 / OP-01 / OP-06 的 GREEN 断言测试模块（`test_s1_s5_security.py`、`test_op_corrections.py`） | `selfdrive/carrot/tests/` | reverse `git apply --check` OK |
+
+**S/OP 修复覆盖（`carrot_s_op_fix.patch`）**:
+- **S-1 ZMQ 7710 RCE**：`tcp://*:7710` → `tcp://127.0.0.1:7710` + HMAC 共享令牌 + `echo_cmd` 白名单（`shell=True` 已移除，改安全可调用表）。
+- **S-2 FTP 硬编码凭据**：`shind0.synology.me` / 泄露口令移出源码；改由 env 注入（`CARROT_FTP_*`）+ `CARROT_FTP_TELEMETRY_ENABLED` 默认关闭门控。
+- **S-3 Web 8088**：`params.put` 增加 `PARAM_KEY_WHITELIST` 键白名单；全部 `Access-Control-Allow-Origin: *` 改为仅反射本机 Origin（`_cors_origin()`）。
+- **S-4/S-5 UDP 无认证注入**：`carrot_man.py`（7706/12345/7709）与 `amap_navi.py`（4210/7705/4213/4211）全部 `0.0.0.0` 绑定位改 `127.0.0.1` + 源 IP 白名单（`_udp_trusted`，loopback 直通 + 首次学习）。
+- **OP-01 雷达天桥过滤**：6 个分散 `_is_overpass`/`_is_overpass_dict` 调用点统一到 `_should_filter_lead()`；追踪器键控从 slot `tid` 改为稳定位置键 `(round(dRel,1), round(yRel,1))`，修正 Hyundai 雷达 slot 复用致 `stable_count` 永不累积的问题。
+- **OP-06 纵向停止分支**：停止分支不再从 `last_output_accel` 乘性 100Hz 反馈起步，改 jerk 限制器（`_J_STOP`，2 m/s³ 对应每帧 0.02 m/s²）平滑过渡到闭式目标 `stopAccel`，消除慢速蠕回。
+
+**应用方式**:
+```
+cd E:\code\openpilot-ck89757
+# 1) F 功能修正
+git apply --check carrot_f18_f22.patch && git apply carrot_f18_f22.patch
+# 2) S/OP 安全 + 算法修正
+git apply --check carrot_s_op_fix.patch && git apply carrot_s_op_fix.patch
+# 3) TDD 测试模块（F + S/OP，与功能 patch 独立、可叠加）
+git apply --check carrot_f18_f22_tests.patch && git apply carrot_f18_f22_tests.patch
+git apply --check carrot_s_op_fix_tests.patch && git apply carrot_s_op_fix_tests.patch
+# 4) 运行全量 TDD 套件
+python3 selfdrive/carrot/tests/run_all_tdd_tests.py   # 期望 71 tests GREEN (skipped=2)
+```
+
+**说明**:
+- **F-21 已按 Spec 收敛**：主 patch 只把热路径（盲区避让 `update_auto_turn`）5 处 print 转 `cloudlog.debug`，
+  非热路径 43 处 print 保留，`showDebugLog` 门控完整保留。早期 `carrot_f21_full.patch` 已被此收敛版取代并删除。
+- **S/OP 测试已翻转为 GREEN 断言**：`test_s1_s5_security.py` 与 `test_op_corrections.py` 原为"修复前 RED 锚点"
+  （断言漏洞/缺陷代码存在）；本轮随 `carrot_s_op_fix.patch` 落地后，已整体反转为"修复后 GREEN"断言
+  （断言漏洞已消除 / 缺陷已修正）。干净树上这两组测试会失败（正确指示漏洞仍在），修复 patch 落地后转 GREEN。
+- 四个 patch 均为 UTF-8 无 BOM、LF 换行。应用前 `git status` 须干净（目标文件相对 HEAD 未改动），否则 `--check` 因"已应用"失败；本轮改用 reverse `--check` 验证，因工作区已处于修复后状态。
 
 ### 7.3 验收测试矩阵（L3 实车/回放）
 

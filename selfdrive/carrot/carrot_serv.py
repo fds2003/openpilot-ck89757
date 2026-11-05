@@ -20,6 +20,7 @@ from openpilot.common.filter_simple import MyMovingAverage
 from openpilot.system.hardware import PC, TICI
 from openpilot.selfdrive.navd.helpers import Coordinate
 from opendbc.car.common.conversions import Conversions as CV
+from openpilot.common.swaglog import cloudlog
 from openpilot.common.realtime import DT_MDL
 
 BLINKER_NONE = 0
@@ -787,7 +788,8 @@ class CarrotServ:
     return delta_v
 
   def compute_delta_v_for_front_rear(self, f_drel_mm, f_vrel, b_drel_mm, b_vrel, v_ego, speed_up_enable, decel_priority):
-    delta_v_front = self.compute_delta_v_for_rear(f_drel_mm, f_vrel, v_ego, speed_up_enable, decel_priority)
+    # F-18: front direction must use for_front ("I approach it"), not for_rear
+    delta_v_front = self.compute_delta_v_for_front(f_drel_mm, f_vrel, v_ego, speed_up_enable, decel_priority)
     delta_v_rear = self.compute_delta_v_for_rear(b_drel_mm, b_vrel, v_ego, speed_up_enable, decel_priority)
 
     if delta_v_rear < 0 and delta_v_front < 0: #前后目标计算出来都是要求减速
@@ -1127,16 +1129,15 @@ class CarrotServ:
           atc_desired = self.bsd_v_ego_kph + self.atc_speed_delta
           if self.atc_speed_delta > 0:
             atc_speed_up = 1
-          print("==============keep================")
-          print(f"final atc_desired {atc_desired:.1f} km/h, total delta {self.atc_speed_delta:.1f} km/h, tick {self.bsd_speed_keep_time}")
+            cloudlog.debug(f"atc_bsd keep: atc_desired={atc_desired:.1f} total_delta={self.atc_speed_delta:.1f} tick={self.bsd_speed_keep_time}")
         elif self.atc_speed_delta > 0: #之前是进行的提速，现在逐步恢复回原速度
-          print("==============restore================")
+          cloudlog.debug("atc_bsd restore begin")
           if self.active_carrot >= 2:  # 开了导航
             min_desire_speed_kph = min(v_cruise_kph, self.nRoadLimitSpeed, atc_desired)
-            print(f"min_desire_speed {min_desire_speed_kph:.1f} km/h, road_limit {self.nRoadLimitSpeed:.1f} km/h")
+            cloudlog.debug(f"min_desire_speed={min_desire_speed_kph:.1f} road_limit={self.nRoadLimitSpeed:.1f} (nav)")
           else:
             min_desire_speed_kph = min(v_cruise_kph, atc_desired)
-            print(f"min_desire_speed {min_desire_speed_kph:.1f} km/h, active_carrot {self.active_carrot}")
+            cloudlog.debug(f"min_desire_speed={min_desire_speed_kph:.1f} active_carrot={self.active_carrot}")
           v_ego_restore = min(self.bsd_v_ego_kph, min_desire_speed_kph) #要还原的速度
           if self.atc_speed_delta > 0:
             max_delta = RESTORE_DOWN_ACCEL_LIMIT * DT_NAV
@@ -1693,7 +1694,11 @@ class CarrotServ:
       self.active_sdi_count = self.active_sdi_count_max
       ### roadLimitSpeed
       nRoadLimitSpeed = int(json.get("nRoadLimitSpeed", 20))
+      # F-22: clamp 0~160 like _handle_speed_limit_command, blocks out-of-range JSON injection
+      nRoadLimitSpeed = int(np.clip(nRoadLimitSpeed, 0, 160))  # F-22: reject out-of-range JSON (0~160)
       if nRoadLimitSpeed > 0:
+        # F-22 note: the 140 downstream cap is the operational ceiling; the F-22
+        # clamp is only a safety gate against JSON injection, not a change to 140.
         if nRoadLimitSpeed > 140:
           nRoadLimitSpeed = 140
 
@@ -1764,8 +1769,8 @@ class CarrotServ:
       self.nPosSpeed = float(json.get("nPosSpeed", self.nPosSpeed))
       self._update_tbt()
       self._update_sdi()
-      if (self.showDebugLog & 1) > 0:
-        print(
+      if (self.showDebugLog & 1) > 0:  # F-21: gated logging, switch preserved
+        cloudlog.debug(
           f"***sdi=T{self.nSdiType},S {self.nSdiSpeedLimit},PS {self.nSdiPlusType}," +
           f"spd=T {self.xSpdType},S {self.xSpdLimit},D {self.xSpdDist:.1f},RC {self.roadcate}, " +
           f"tbt=T {self.nTBTTurnType},D {self.nTBTDist}, " +

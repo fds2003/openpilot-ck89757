@@ -189,8 +189,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP): #new
     elif self._exp_on_counter >= self._exp_on_frames and not self._exp_latched:
       # 进入实验模式
       #if not sm['selfdriveState'].experimentalMode and not self.UserExperimentalMode:
-      #  self.sys_params.put_bool_nonblocking("ExperimentalMode", True)
-      self.sys_params.put_bool_nonblocking("ExperimentalMode", True)
+      # F-20: only write when the global value actually differs, avoiding per-frame
+      # redundant puts at 20 Hz that race with selfdrived
+      if not sm['selfdriveState'].experimentalMode:
+        self.sys_params.put_bool_nonblocking("ExperimentalMode", True)
 
       self.mpc.mode = 'blended'
       self._exp_latched = True
@@ -200,8 +202,9 @@ class LongitudinalPlanner(LongitudinalPlannerSP): #new
     elif self._exp_off_counter >= self._exp_off_frames and self._exp_latched:
       # 退出实验模式
       #if sm['selfdriveState'].experimentalMode:
-      #  self.sys_params.put_bool_nonblocking("ExperimentalMode", False)
-      self.sys_params.put_bool_nonblocking("ExperimentalMode", False)
+      # F-20: same, only write on flip
+      if sm['selfdriveState'].experimentalMode:
+        self.sys_params.put_bool_nonblocking("ExperimentalMode", False)
 
       self._exp_latched = False
       self.UserExperimentalMode = False

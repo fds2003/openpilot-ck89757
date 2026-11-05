@@ -141,15 +141,23 @@ class LongControl:
       output_accel = 0.
 
     elif self.long_control_state == LongCtrlState.stopping:
-      output_accel = self.last_output_accel
-
-      if soft_hold_active:
-        output_accel = self.CP.stopAccel
-
+      # OP-06: 闭式定值减速 —— 不再从 last_output_accel 乘性反馈起步。
+      # 旧实现每帧：output_accel = last_output_accel - stopRate*DT_CTRL，
+      # 形成 100Hz 衰减斜坡，无法到达稳态，车会缓慢蠕回。
+      # 现改为：以 stopAccel 为目标，通过 jerk 限制（J_STOP）从当前
+      # last_output_accel 平滑过渡到该目标；jerk 限制确保加速度
+      # 本身连续变化，消除 100Hz 步进。
       stopAccel = self.stopping_accel if self.stopping_accel < 0.0 else self.CP.stopAccel
-      if output_accel > stopAccel:
-        output_accel = min(output_accel, 0.0)
-        output_accel -= self.CP.stoppingDecelRate * DT_CTRL if self.stopping_decel_rate <= 0.0 else self.stopping_decel_rate * DT_CTRL #new
+      if soft_hold_active:
+        stopAccel = self.CP.stopAccel
+
+      # OP-06: 闭环 jerk 限制器（每帧 max 减速率增量）
+      # 最大 jerk = 2 m/s³  对应 100Hz 下每帧 0.02 m/s²
+      _J_STOP = 0.02
+      if stopAccel < self.last_output_accel:
+        output_accel = max(stopAccel, self.last_output_accel - _J_STOP)
+      else:
+        output_accel = min(stopAccel, self.last_output_accel + _J_STOP)
       self.reset()
 
     elif self.long_control_state == LongCtrlState.starting:

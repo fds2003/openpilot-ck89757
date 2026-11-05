@@ -1,0 +1,214 @@
+diff --git a/selfdrive/carrot/tests/test_op_corrections.py b/selfdrive/carrot/tests/test_op_corrections.py
+new file mode 100644
+index 0000000..678c1ce
+--- /dev/null
++++ b/selfdrive/carrot/tests/test_op_corrections.py
+@@ -0,0 +1,72 @@
++#!/usr/bin/env python3
++"""
++TDD tests for OP-01 (radar overpass filter) and OP-06 (longitudinal stopping).
++
++These tests assert the POST-FIX state (defects corrected).
++They are GREEN after the OP patches land; they FAIL on a clean tree.
++"""
++import os
++import re
++import unittest
++
++ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
++RADARD = os.path.join(ROOT, "selfdrive", "controls", "radard.py")
++LONCTRL = os.path.join(ROOT, "selfdrive", "controls", "lib", "longcontrol.py")
++
++
++def _read(path):
++  with open(path, encoding="utf-8") as f:
++    return f.read()
++
++
++class TestOP01OverpassFilter(unittest.TestCase):
++  """OP-01: unified _should_filter_lead() + position-keyed overpass tracker."""
++
++  def test_unified_filter_entry_present(self):
++    """Post-fix: a single _should_filter_lead() entry point exists."""
++    text = _read(RADARD)
++    self.assertRegex(text, r"def _should_filter_lead\(",
++                     "OP-01 GREEN: unified _should_filter_lead() expected")
++
++  def test_tracker_keyed_by_position_not_slot(self):
++    """Post-fix: tracker keyed by a stable (dRel, yRel) position, not raw tid slot."""
++    text = _read(RADARD)
++    self.assertIn("_lead_position_key", text,
++                  "OP-01 GREEN: position-key helper expected")
++    self.assertRegex(text, r"self\._overpass_tracker\[key\]\s*=",
++                     "OP-01 GREEN: tracker keyed by position key expected")
++
++  def test_legacy_track_filter_delegates(self):
++    """Post-fix: _is_overpass(Track) delegates to the unified entry point."""
++    text = _read(RADARD)
++    m = re.search(r"def _is_overpass\(self, track\)[^:]*:.*?return self\._should_filter_lead\(track\)",
++                  text, re.DOTALL)
++    self.assertIsNotNone(m, "OP-01 GREEN: _is_overpass should delegate to _should_filter_lead")
++
++
++class TestOP06StoppingBranchDecay(unittest.TestCase):
++  """OP-06: stopping branch uses jerk-limited transition to a closed-form target."""
++
++  def test_stopping_branch_no_multiplicative_feedback(self):
++    """Post-fix: output_accel no longer seeds directly from last_output_accel
++    in the stopping branch; instead a jerk limit is applied to a target."""
++    text = _read(LONCTRL)
++    # The pre-fix bug pattern is gone
++    self.assertNotRegex(text,
++      r"output_accel\s*=\s*self\.last_output_accel\s*\n\s*\n\s*if soft_hold",
++      "OP-06 GREEN: raw last_output_accel seed should be replaced by jerk-limited transition")
++
++  def test_jerk_limit_in_stopping_branch(self):
++    """Post-fix: a per-frame jerk limit constant exists in the stopping branch."""
++    text = _read(LONCTRL)
++    self.assertIn("_J_STOP", text, "OP-06 GREEN: jerk-limit constant expected")
++
++  def test_stopping_decrements_with_jerk(self):
++    """Post-fix: the stopping branch clamps output_accel toward stopAccel by _J_STOP."""
++    text = _read(LONCTRL)
++    m = re.search(r"output_accel\s*=\s*max\(stopAccel,\s*self\.last_output_accel\s*-\s*_J_STOP\)", text)
++    self.assertIsNotNone(m, "OP-06 GREEN: jerk-limited downward step expected")
++
++
++if __name__ == "__main__":
++  unittest.main()
+diff --git a/selfdrive/carrot/tests/test_s1_s5_security.py b/selfdrive/carrot/tests/test_s1_s5_security.py
+new file mode 100644
+index 0000000..f81ca5f
+--- /dev/null
++++ b/selfdrive/carrot/tests/test_s1_s5_security.py
+@@ -0,0 +1,130 @@
++#!/usr/bin/env python3
++"""
++TDD tests for S-1~S-5 security findings.
++
++These tests assert the POST-FIX state (vulnerabilities removed).
++They are GREEN after the security patches land; they FAIL on a clean
++(pre-fix) tree, correctly signalling that the vulnerability is present.
++"""
++import os
++import re
++import unittest
++
++ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
++CARROT_MAN = os.path.join(ROOT, "selfdrive", "carrot", "carrot_man.py")
++WEB_IFACE = os.path.join(ROOT, "selfdrive", "carrot", "web_interface.py")
++AMAP_NAVI = os.path.join(ROOT, "selfdrive", "carrot", "amap_navi.py")
++
++
++def _read(path):
++  with open(path, encoding="utf-8") as f:
++    return f.read()
++
++
++class TestS1ZmqRce(unittest.TestCase):
++  """S-1: ZMQ 7710 loopback bind + HMAC token + echo_cmd whitelist (no shell=True)."""
++
++  def test_shell_true_echo_cmd_removed(self):
++    """Post-fix: echo_cmd no longer runs through shell=True."""
++    text = _read(CARROT_MAN)
++    m = re.search(r"subprocess\.run\(json_obj\['echo_cmd'\],\s*shell\s*=\s*True", text)
++    self.assertIsNone(m, "S-1 GREEN: shell=True echo_cmd must be removed")
++
++  def test_echo_cmd_whitelist_present(self):
++    """Post-fix: echo_cmd restricted to a named whitelist of safe commands."""
++    text = _read(CARROT_MAN)
++    self.assertIn("echo_cmd_whitelist", text, "S-1 GREEN: echo_cmd whitelist expected")
++
++  def test_zmq_bind_loopback(self):
++    """Post-fix: ZMQ binds to 127.0.0.1:7710, not tcp://*:7710."""
++    text = _read(CARROT_MAN)
++    self.assertNotIn('tcp://*:7710', text, "S-1 GREEN: wildcard 7710 bind must be gone")
++    self.assertIn('tcp://127.0.0.1:7710', text, "S-1 GREEN: loopback 7710 bind expected")
++
++  def test_token_auth_on_zmq(self):
++    """Post-fix: ZMQ channel enforces a shared-token check."""
++    text = _read(CARROT_MAN)
++    self.assertIn("_zmq_token", text, "S-1 GREEN: ZMQ token auth expected")
++    self.assertIn("compare_digest", text, "S-1 GREEN: constant-time token compare expected")
++
++
++class TestS2FtpHardcodedCreds(unittest.TestCase):
++  """S-2: FTP credentials parameterized + default-disabled."""
++
++  def test_ftp_server_hardcoded_removed(self):
++    """Post-fix: no hardcoded FTP server host in source."""
++    text = _read(CARROT_MAN)
++    self.assertNotIn("shind0.synology.me", text,
++                     "S-2 GREEN: hardcoded FTP server must be removed")
++
++  def test_ftp_password_hardcoded_removed(self):
++    """Post-fix: the leaked password string must not appear in source."""
++    text = _read(CARROT_MAN)
++    self.assertNotIn("Ekdrmsvkdlffjt7710", text,
++                     "S-2 GREEN: hardcoded FTP password must be removed")
++
++  def test_ftp_env_injected_and_gated(self):
++    """Post-fix: credentials come from env vars and are gated behind an opt-in flag."""
++    text = _read(CARROT_MAN)
++    self.assertIn("CARROT_FTP_SERVER", text, "S-2 GREEN: env-injected FTP server expected")
++    self.assertIn("CARROT_FTP_TELEMETRY_ENABLED", text, "S-2 GREEN: default-off FTP gate expected")
++
++
++class TestS3WebInterfaceCORSAndParams(unittest.TestCase):
++  """S-3: HTTP 8088 with whitelist-gated params.put + no wildcard CORS."""
++
++  def test_cors_wildcard_removed(self):
++    text = _read(WEB_IFACE)
++    self.assertNotIn("Access-Control-Allow-Origin', '*'", text,
++                     "S-3 GREEN: wildcard CORS must be removed")
++
++  def test_params_put_whitelist_guard(self):
++    """Post-fix: params.put is gated by a key whitelist."""
++    text = _read(WEB_IFACE)
++    self.assertIn("PARAM_KEY_WHITELIST", text,
++                  "S-3 GREEN: params whitelist expected")
++    self.assertIn("if key not in PARAM_KEY_WHITELIST", text,
++                  "S-3 GREEN: whitelist guard expected")
++
++
++class TestS4AmapNaviUdpBinds(unittest.TestCase):
++  """S-4: amap_navi.py UDP ports bound to loopback + source whitelist."""
++
++  def test_amap_navi_no_0000_bind(self):
++    text = _read(AMAP_NAVI)
++    # Active 0.0.0.0 bind() calls must be gone (comments only allowed).
++    active_binds = len(re.findall(r"bind\(\s*\(?\s*'0\.0\.0\.0'", text))
++    self.assertEqual(active_binds, 0,
++                     "S-4 GREEN: no active 0.0.0.0 UDP binds expected")
++
++  def test_amap_navi_loopback_bind(self):
++    text = _read(AMAP_NAVI)
++    loopback_binds = len(re.findall(r"bind\(\s*\(?\s*'127\.0\.0\.1'", text))
++    self.assertGreaterEqual(loopback_binds, 4,
++                            f"S-4 GREEN: expected >=4 loopback UDP binds, found {loopback_binds}")
++
++  def test_amap_navi_source_whitelist(self):
++    text = _read(AMAP_NAVI)
++    self.assertIn("_udp_trusted", text, "S-4 GREEN: source-IP whitelist expected")
++
++
++class TestS5CarrotManUdpBinds(unittest.TestCase):
++  """S-5: carrot_man.py UDP bound to loopback + source whitelist."""
++
++  def test_udp_7706_loopback_bind(self):
++    text = _read(CARROT_MAN)
++    m = re.search(r"sock\.bind\(\('127\.0\.0\.1',\s*self\.carrot_man_port\)\)", text)
++    self.assertIsNotNone(m, "S-5 GREEN: UDP 7706 loopback bind expected")
++
++  def test_udp_12345_loopback_bind(self):
++    text = _read(CARROT_MAN)
++    m = re.search(r"sock\.bind\(\('127\.0\.0\.1',\s*12345\)\)", text)
++    self.assertIsNotNone(m, "S-5 GREEN: UDP 12345 loopback bind expected")
++
++  def test_udp_source_whitelist(self):
++    text = _read(CARROT_MAN)
++    self.assertIn("_udp_trusted", text, "S-5 GREEN: source-IP whitelist expected")
++
++
++if __name__ == "__main__":
++  unittest.main()

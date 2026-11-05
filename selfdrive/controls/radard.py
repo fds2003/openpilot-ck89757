@@ -400,7 +400,11 @@ class RadarD:
 
     # 移植自 cpv9-corolla：天桥/龙门架/ETC门架检测状态
     # 特征：静止 + 车道中心 + 距离几乎不变 + 持续多帧
-    self._overpass_tracker = {}  # track_id -> {first_dRel, last_dRel, stable_count, total_frames}
+    # OP-01: 追踪器按【稳定位置】(round(dRel,1), round(yRel,1)) 键控，
+    # 而非原始 track_id/slot。Hyundai 雷达每个 frame 可能复用 slot，
+    # 以 slot 为键会让 stable_count 永远无法累积到阈值；
+    # 以位置为键则同一物理天桥目标跨帧仍能匹配。
+    self._overpass_tracker = {}  # (round(dRel,1), round(yRel,1)) -> {first_dRel, last_dRel, stable_count, total_frames}
 
 
   def update(self, sm: messaging.SubMaster, rr: car.RadarData):
@@ -434,9 +438,8 @@ class RadarD:
     for tid in list(self.tracks.keys()):
       if tid not in valid_ids:
         self.tracks.pop(tid)
-        # 移植自 cpv9-corolla：清理天桥追踪器
-        if tid in self._overpass_tracker:
-          del self._overpass_tracker[tid]
+        # OP-01: 追踪器按位置键控；此处无法按位置清理，改为定期老化
+        # （位置键在下一帧 update 时若目标不再出现即失效，无需按 tid 删除）
 
     # *** publish radarState ***
     self.radar_state_valid = sm.all_checks()
@@ -486,9 +489,20 @@ class RadarD:
   # 移植自 cpv9-corolla：天桥/龙门架/ETC门架 检测
   # 特征：静止 + 车道中心 + 距离几乎不变 + 持续多帧
   # ============================================================
+  # ============================================================
+  # OP-01: 统一天桥/龙门架/ETC门架 过滤。
+  # 追踪器按【稳定位置】键控 (round(dRel,1), round(yRel,1))，而非 slot/tid，
+  # 解决 Hyundai 雷达 slot 复用导致 stable_count 无法累积的问题。
+  # 单一入口 _should_filter_lead() 同时接受 Track 对象或 dict lead。
+  # ============================================================
+  @staticmethod
+  def _lead_position_key(drel, yrel):
+    """OP-01: 以位置（而非 slot）作为稳定键。1m 分辨率足够区分不同目标。"""
+    return (round(float(drel), 1), round(float(yrel), 1))
+
   def _update_overpass_tracker(self, track):
-    """更新天桥检测状态，返回 True 表示确认是天桥"""
-    tid = track.identifier
+    """OP-01: 按位置键更新天桥检测状态，返回 True 表示确认是天桥。"""
+    key = self._lead_position_key(track.dRel, track.yRel)
     drel = track.dRel
     vrel = track.vLead
     yrel = track.yRel
@@ -499,21 +513,22 @@ class RadarD:
     is_mid_range = 10 < drel < 80
 
     if not (is_stationary and is_centered and is_mid_range):
-      # 不符合天桥特征，清除追踪
-      if tid in self._overpass_tracker:
-        del self._overpass_tracker[tid]
+      # 不符合天桥特征，清除该位置追踪
+      if key in self._overpass_tracker:
+        del self._overpass_tracker[key]
       return False
 
-    # 符合基本特征，开始/继续追踪
-    if tid not in self._overpass_tracker:
-      self._overpass_tracker[tid] = {
+    # 符合基本特征，开始/继续追踪（按位置键）
+    if key not in self._overpass_tracker:
+      self._overpass_tracker[key] = {
         'first_dRel': drel,
         'last_dRel': drel,
         'stable_count': 0,
         'total_frames': 0,
+        'tid': getattr(track, 'identifier', None),  # 仅用于日志
       }
 
-    info = self._overpass_tracker[tid]
+    info = self._overpass_tracker[key]
     info['total_frames'] += 1
 
     # 距离变化小于 0.5m → 稳定
@@ -527,28 +542,34 @@ class RadarD:
     # 连续5帧以上距离几乎不变 → 确认天桥
     confirmed = (info['stable_count'] >= 5)
     if confirmed:
-      cloudlog.warning(f"[RADAR-OVERPASS] 确认天桥 track_id={tid} dRel={drel:.1f}m vRel={vrel:.1f} yRel={yrel:.1f}")
+      cloudlog.warning(f"[RADAR-OVERPASS] 确认天桥 pos={key} tid={info.get('tid')} dRel={drel:.1f}m vRel={vrel:.1f} yRel={yrel:.1f}")
 
     return confirmed
 
-  def _is_overpass(self, track) -> bool:
-    """综合判断是否为天桥/龙门架"""
-    # 先更新追踪器
-    if self._update_overpass_tracker(track):
-      return True
+  def _should_filter_lead(self, lead) -> bool:
+    """OP-01: 统一过滤入口。lead 可以是 Track 对象或 dict lead。
 
-    # 快速判断：静止 + 车道中心 + 中远距离 → 高概率天桥
-    if (abs(track.vLead) < 1.0
-        and abs(track.yRel) < 1.5
-        and 10 < track.dRel < 80):
-      # 检查是否已经在追踪中且稳定
-      tid = track.identifier
-      if tid in self._overpass_tracker:
-        info = self._overpass_tracker[tid]
-        if info['stable_count'] >= 3:
-          return True
-      return False
-    return False
+    将原来分散的 _is_overpass(Track) 与 _is_overpass_dict(dict) 合并为
+    单一入口，内部统一按位置键更新追踪器。
+    """
+    # dict lead（_pick_lead_one_from_state 路径）：仅做快速静止特征判断
+    if isinstance(lead, dict):
+      return (abs(lead.get('vLead', 0)) < 1.0
+              and abs(lead.get('dPath', 0)) < 1.5
+              and 10 < lead.get('dRel', 0) < 80)
+
+    # Track 对象：走位置键追踪器
+    return self._update_overpass_tracker(lead)
+
+  # OP-01: 保留 _is_overpass 作为向后兼容别名（委托统一入口）。
+  # 现有 3 处 self._is_overpass(Track) 调用点继续工作，行为不变。
+  def _is_overpass(self, track) -> bool:
+    """OP-01 兼容别名：等价于 _should_filter_lead(track)。"""
+    return self._should_filter_lead(track)
+
+  def _is_overpass_dict(self, ld) -> bool:
+    """OP-01 兼容别名：等价于 _should_filter_lead(ld)（dict 路径）。"""
+    return self._should_filter_lead(ld)
 
   def get_lead(self, CS, md, tracks: dict[int, Track], index: int, lead_msg: capnp._DynamicStructReader,
                model_v_ego: float, low_speed_override: bool = True) -> dict[str, Any]:
@@ -720,9 +741,10 @@ class RadarD:
     chosen = None
     detected = self.radar_detected
 
-    # 移植自 cpv9-corolla：天桥过滤辅助函数
+    # OP-01: 委托统一入口 _should_filter_lead（dict 路径），
+    # 保持 3 处 dict 调用点（_is_overpass_dict 兼容别名 + 本处本地函数）行为一致。
     def _is_overpass_dict(ld):
-      return abs(ld.get('vLead', 0)) < 1.0 and abs(ld.get('dPath', 0)) < 1.5 and 10 < ld.get('dRel', 0) < 80
+      return self._should_filter_lead(ld)
 
     if self.leadCutIn and self.leadCutIn.get("status") and self.detect_cut_in:
       if not _is_overpass_dict(self.leadCutIn):

@@ -28,6 +28,21 @@ def main():
   from test_mpv_smooth_lane_change import TestMpvSmoothLaneChange
   from test_c3_cooperative_modifications import TestC3CooperativeModifications
   from test_amap_navi_networking import TestAmapNaviNetworking
+  from test_real_code_contract import TestRealCodeContract
+  # F-18~F-22 TDD modules
+  from test_f18_front_rear import TestF18FrontRearCopyPaste
+  from test_f19_vrel import TestF19VRelConvention
+  from test_f20_exp_mode import TestF20ExpModeGating
+  from test_f21_print import TestF21PrintToCloudlog
+  from test_f22_speed_clamp import TestF22SpeedLimitClamp
+  from test_s1_s5_security import (
+    TestS1ZmqRce,
+    TestS2FtpHardcodedCreds,
+    TestS3WebInterfaceCORSAndParams,
+    TestS4AmapNaviUdpBinds,
+    TestS5CarrotManUdpBinds,
+  )
+  from test_op_corrections import TestOP01OverpassFilter, TestOP06StoppingBranchDecay
 
   suite.addTests(loader.loadTestsFromTestCase(TestSecuritySwitches))
   suite.addTests(loader.loadTestsFromTestCase(TestLogRotation))
@@ -40,6 +55,22 @@ def main():
   suite.addTests(loader.loadTestsFromTestCase(TestMpvSmoothLaneChange))
   suite.addTests(loader.loadTestsFromTestCase(TestC3CooperativeModifications))
   suite.addTests(loader.loadTestsFromTestCase(TestAmapNaviNetworking))
+  suite.addTests(loader.loadTestsFromTestCase(TestRealCodeContract))
+  # F-18~F-22
+  suite.addTests(loader.loadTestsFromTestCase(TestF18FrontRearCopyPaste))
+  suite.addTests(loader.loadTestsFromTestCase(TestF19VRelConvention))
+  suite.addTests(loader.loadTestsFromTestCase(TestF20ExpModeGating))
+  suite.addTests(loader.loadTestsFromTestCase(TestF21PrintToCloudlog))
+  suite.addTests(loader.loadTestsFromTestCase(TestF22SpeedLimitClamp))
+  # S-1~S-5 security RED tests
+  suite.addTests(loader.loadTestsFromTestCase(TestS1ZmqRce))
+  suite.addTests(loader.loadTestsFromTestCase(TestS2FtpHardcodedCreds))
+  suite.addTests(loader.loadTestsFromTestCase(TestS3WebInterfaceCORSAndParams))
+  suite.addTests(loader.loadTestsFromTestCase(TestS4AmapNaviUdpBinds))
+  suite.addTests(loader.loadTestsFromTestCase(TestS5CarrotManUdpBinds))
+  # OP corrections RED tests
+  suite.addTests(loader.loadTestsFromTestCase(TestOP01OverpassFilter))
+  suite.addTests(loader.loadTestsFromTestCase(TestOP06StoppingBranchDecay))
   runner = unittest.TextTestRunner(verbosity=2)
   result = runner.run(suite)
 

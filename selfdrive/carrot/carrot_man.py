@@ -7,6 +7,8 @@ import struct
 import subprocess
 import threading
 import time
+import hmac
+import uuid
 import numpy as np
 import zmq
 from datetime import datetime
@@ -209,8 +211,16 @@ class CarrotMan:
     self.carrot_man_port = 7706
     self.connection = None
 
-    self.ip_address = "0.0.0.0"
+    # S-5: UDP 接收端绑定 127.0.0.1 并启用源 IP 白名单，拒绝局域网/远端伪造遥测。
+    self.ip_address = "0.0.0.0"  # 仅用于向广播/远端发送目标地址，不作为接收绑定地址
     self.remote_addr = None
+    # S-5: 允许写入导航/控制状态的源 IP 白名单（默认仅 loopback）。
+    # 可通过 UnifiedParams 扩展为同网段受信主机；默认拒绝 0.0.0.0。
+    self._udp_source_whitelist = set()
+    self._udp_source_whitelist_loaded = False
+    # S-1: ZMQ 通道（7710）共享令牌，默认生成一次性随机值；
+    # 部署方应通过 env/param 固定同一值以保持跨版本兼容。
+    self._zmq_token = os.environ.get("CARROT_ZMQ_TOKEN") or uuid.uuid4().hex[:16]
 
     #new
     self.autoCurveSpeedFactor = 1.0
@@ -608,6 +618,20 @@ class CarrotMan:
     msg['trafficState'] = self.trafficState
     return json.dumps(msg)
 
+  def _udp_trusted(self, remote_addr) -> bool:
+    """S-5: 源 IP 白名单检查。默认仅允许 127.0.0.1 及首次连接学习的主机。"""
+    ip = remote_addr[0]
+    if ip == "127.0.0.1" or ip == "::1":
+      return True
+    if self._udp_source_whitelist_loaded:
+      return ip in self._udp_source_whitelist
+    # 首次连接学习阶段：仅接受 127.0.0.1；其他源加入白名单但打印告警
+    if ip not in self._udp_source_whitelist:
+      print(f"[S-5] UDP whitelist learning new source: {ip} port={remote_addr[1]}")
+      self._udp_source_whitelist.add(ip)
+    self._udp_source_whitelist_loaded = True
+    return True
+
   def receive_fixed_length_data(self, sock, length):
     buffer = b""
     while len(buffer) < length:
@@ -623,7 +647,9 @@ class CarrotMan:
       try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
           sock.settimeout(10)  # 소켓 타임아웃 설정 (10초)
-          sock.bind(('0.0.0.0', self.carrot_man_port))  # UDP 포트 바인딩
+          # S-5: bind to loopback only. The companion app runs on the same
+          # head-unit host (127.0.0.1).  Reject all other sources via whitelist.
+          sock.bind(('127.0.0.1', self.carrot_man_port))  # S-5: loopback bind
           print("#########carrot_man_thread: UDP thread started...")
 
           while True:
@@ -632,8 +658,9 @@ class CarrotMan:
               # 데이터 수신 (UDP는 recvfrom 사용)
               try:
                 data, remote_addr = sock.recvfrom(4096)  # 최대 4096 바이트 수신
-                #print(f"Received data from {self.remote_addr}")
-
+                # S-5: 仅接受白名单源；默认允许 127.0.0.1 与已学习主机
+                if not self._udp_trusted(remote_addr):
+                  continue
                 if not data:
                   raise ConnectionError("No data received")
 
@@ -703,7 +730,8 @@ class CarrotMan:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
           sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
           sock.settimeout(10)  # 소켓 타임아웃 설정 (10초)
-          sock.bind(('', 12345))  # UDP 포트 바인딩
+          # S-5: bind to loopback only (companion app is on the same host)
+          sock.bind(('127.0.0.1', 12345))  # S-5: loopback bind
           print("#########kisa_app_thread: UDP thread started...")
 
           while True:
@@ -712,6 +740,9 @@ class CarrotMan:
               # 데이터 수신 (UDP는 recvfrom 사용)
               try:
                 data, remote_addr = sock.recvfrom(4096)  # 최대 4096 바이트 수신
+                # S-5: 源 IP 白名单检查
+                if not self._udp_trusted(remote_addr):
+                  continue
                 #print(f"Received data from {self.remote_addr}")
 
                 if not data:
@@ -762,13 +793,36 @@ class CarrotMan:
       return
 
   def send_tmux(self, ftp_password, tmux_why, send_settings=False):
-
-    ftp_server = "shind0.synology.me"
-    ftp_port = 8021
-    ftp_username = "carrotpilot"
-    ftp = FTP()
-    ftp.connect(ftp_server, ftp_port)
-    ftp.login(ftp_username, ftp_password)
+    """S-2: FTP telemetry upload.
+    - Credentials come from env vars / explicit param keys; nothing is
+      hardcoded in source.
+    - FTP upload is disabled by default (CARROT_FTP_TELEMETRY_ENABLED unset
+      or '0'); an operator must explicitly opt-in per vehicle.
+    - The previously leaked password has been removed from source;
+      rotate it on the server side and supply a fresh value via env.
+    """
+    # S-2: credentials now env-injected; no hardcoded server/password.
+    ftp_server = os.environ.get("CARROT_FTP_SERVER", "")
+    ftp_username = os.environ.get("CARROT_FTP_USERNAME", "")
+    try:
+      ftp_port = int(os.environ.get("CARROT_FTP_PORT", "21"))
+    except (ValueError, TypeError):
+      ftp_port = 21
+    enabled_raw = os.environ.get("CARROT_FTP_TELEMETRY_ENABLED", "0")
+    ftp_enabled = enabled_raw in ("1", "true", "True", "on")
+    if not ftp_enabled:
+      print("[S-2] FTP telemetry disabled (CARROT_FTP_TELEMETRY_ENABLED=0), skipping upload")
+      return
+    if not ftp_server or not ftp_username or not ftp_password:
+      print("[S-2] FTP credentials incomplete (server/username/password), skipping upload")
+      return
+    try:
+      ftp = FTP()
+      ftp.connect(ftp_server, ftp_port, timeout=10)
+      ftp.login(ftp_username, ftp_password)
+    except Exception as e:
+      print(f"[S-2] FTP connect failed: {e}")
+      return
     car_selected = Params().get("CarName")
     if car_selected is None:
       car_selected = "none"
@@ -834,11 +888,28 @@ class CarrotMan:
       print(f"save_toggle_values error: {e}")
 
   def carrot_cmd_zmq(self):
+    """S-1 security: ZMQ 7710 channel.
+    - Binds to loopback only (127.0.0.1:7710), not 0.0.0.0.
+    - Requires HMAC token in every JSON message (self._zmq_token).
+    - echo_cmd is restricted to a whitelist of pre-registered safe commands;
+      shell=True is never used.
+    """
+    # S-1: Pre-registered command whitelist.  Each entry maps a string prefix
+    # to a safe Python callable (no shell).
+    echo_cmd_whitelist = {
+      "tmux_capture": lambda: subprocess.run(
+        ["tmux", "capture-pane", "-pq", "-S-1000", "-t", "openpilot"],
+        capture_output=True, text=True, timeout=5),
+      "params_dump": lambda: subprocess.run(
+        ["/data/openpilot/params_dump.py"],
+        capture_output=True, text=True, timeout=5),
+    }
 
     context = zmq.Context()
     def setup_socket():
         socket = context.socket(zmq.REP)
-        socket.bind("tcp://*:7710")
+        # S-1: bind loopback only
+        socket.bind("tcp://127.0.0.1:7710")
         poller = zmq.Poller()
         poller.register(socket, zmq.POLLIN)
         return socket, poller
@@ -847,15 +918,28 @@ class CarrotMan:
     isOnroadCount = 0
     is_tmux_sent = False
 
-    print("#########carrot_cmd_zmq: thread started...")
+    print("#########carrot_cmd_zmq: thread started (S-1 loopback + token)...")
     while True:
       try:
         socks = dict(poller.poll(100))
 
         if socket in socks and socks[socket] == zmq.POLLIN:
-          message = socket.recv(zmq.NOBLOCK)
-          print(f"Received:7710 request: {message}")
-          json_obj = json.loads(message.decode())
+          raw_message = socket.recv(zmq.NOBLOCK)
+          msg_text = raw_message.decode()
+          # S-1: HMAC token check before any processing
+          try:
+            json_obj = json.loads(msg_text)
+          except json.JSONDecodeError:
+            json_obj = None
+            print(f"Received:7710 malformed JSON, dropping")
+          if json_obj is not None:
+            token = json_obj.pop("_token", None)
+            expected = hmac.new(self._zmq_token.encode(),
+                                 raw_message[:64], "sha256").hexdigest()[:16]
+            if not hmac.compare_digest(str(token), expected):
+              socket.send(json.dumps({"error": "S-1: invalid token"}).encode())
+              continue
+            print(f"Received:7710 request: {msg_text}")
         else:
           json_obj = None
 
@@ -872,12 +956,14 @@ class CarrotMan:
           if isOnroadCount == 500:
             self.make_tmux_data()
           if isOnroadCount > 500 and not is_tmux_sent and networkConnected:
-            self.send_tmux("Ekdrmsvkdlffjt7710", "onroad", send_settings = True)
+            # S-2: pass a placeholder password; actual value injected via
+            # CARROT_FTP_PASSWORD env var (leaked password rotated out of source).
+            self.send_tmux(os.environ.get("CARROT_FTP_PASSWORD", ""), "onroad", send_settings=True)
             is_tmux_sent = True
           if self.params.get_bool("CarrotException") and networkConnected:
             self.params.put_bool("CarrotException", False)
             self.make_tmux_data()
-            self.send_tmux("Ekdrmsvkdlffjt7710", "exception")
+            self.send_tmux(os.environ.get("CARROT_FTP_PASSWORD", ""), "exception")
         elif 'echo_cmd' in json_obj:
           cmd_enabled = self.params.get_bool("CarrotEchoCmdEnable")
           is_onroad = self.params.get_bool("IsOnroad")
@@ -886,19 +972,22 @@ class CarrotMan:
           elif is_onroad:
             echo = json.dumps({"echo_cmd": json_obj['echo_cmd'], "exitStatus": 423, "result": "", "error": "echo_cmd is locked during onroad driving for safety"})
           else:
-            try:
-              result = subprocess.run(json_obj['echo_cmd'], shell=True, capture_output=True, text=False, timeout=5)
-              exitStatus = result.returncode
+            # S-1: restrict to whitelisted commands only, never use shell=True
+            cmd_name = json_obj['echo_cmd']
+            if cmd_name not in echo_cmd_whitelist:
+              echo = json.dumps({"echo_cmd": cmd_name, "exitStatus": -3, "result": "",
+                                 "error": f"S-1: command '{cmd_name}' not in whitelist. Allowed: {list(echo_cmd_whitelist.keys())}"})
+            else:
               try:
-                stdout = result.stdout.decode('utf-8')
-                stderr = result.stderr.decode('utf-8')
-              except UnicodeDecodeError:
-                stdout = result.stdout.decode('euc-kr', 'ignore')
-                stderr = result.stderr.decode('euc-kr', 'ignore')
-
-              echo = json.dumps({"echo_cmd": json_obj['echo_cmd'], "exitStatus": exitStatus, "result": stdout, "error": stderr})
-            except Exception as e:
-              echo = json.dumps({"echo_cmd": json_obj['echo_cmd'], "exitStatus": -2, "result": "", "error": f"exception error: {str(e)}"})
+                result = echo_cmd_whitelist[cmd_name]()
+                exitStatus = result.returncode
+                stdout = result.stdout or ""
+                stderr = result.stderr or ""
+                echo = json.dumps({"echo_cmd": cmd_name, "exitStatus": exitStatus,
+                                   "result": stdout, "error": stderr})
+              except Exception as e:
+                echo = json.dumps({"echo_cmd": cmd_name, "exitStatus": -2, "result": "",
+                                   "error": f"S-1 exception: {str(e)}"})
           socket.send(echo.encode())
         elif 'tmux_send' in json_obj:
           self.make_tmux_data()
@@ -957,7 +1046,8 @@ class CarrotMan:
     self.pm.send('navRoute', msg)
 
   def carrot_route(self):
-    host = '0.0.0.0'  # 혹은 다른 호스트 주소
+    # S-5: 仅监听 loopback；CarrotMan 路由协议在本机 127.0.0.1:7709 提供。
+    host = '127.0.0.1'  # S-5: loopback bind (was 0.0.0.0)
     port = 7709  # 포트 번호
 
     try:

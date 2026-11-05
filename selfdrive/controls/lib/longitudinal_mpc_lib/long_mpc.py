@@ -350,6 +350,13 @@ class LongitudinalMpc:
     v_lead = np.clip(v_lead, 0.0, 1e8)
     a_lead = np.clip(a_lead, -10., 5.)
 
+    # F-19: Lock the vRel sign convention. radard guarantees vRel = v_lead - v_ego
+    # (v_ego >= 0), so vLead (= v_ego + vRel) must be >= vRel. If radard ever
+    # inverts the vRel definition, this assert fires loudly instead of letting
+    # the lead clamp below (~line 396) silently reverse.
+    if lead.status:
+      assert v_lead >= lead.vRel - 1e-6, f"vRel convention violated: vLead={v_lead} < vRel={lead.vRel}"
+
     if a_lead < -2.0 and j_lead > 0.5:
       a_lead = a_lead + j_lead
       a_lead = min(a_lead, -0.5)

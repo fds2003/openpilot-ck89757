@@ -14,6 +14,29 @@ from openpilot.system.manager.manager import get_default_params_key
 
 params = Params()
 
+# S-3: params.put 白名单。仅允许通过 Web 界面写入以下参数键。
+# 任何不在白名单中的键都会被拒绝，防止未授权修改行车/刹车/控制参数。
+PARAM_KEY_WHITELIST = {
+  "AutoTurnDistOffset", "AutoForkDistOffset", "AutoDoForkBlinkerDist",
+  "AutoForkDistOffsetH", "AutoDoForkDecalDistH", "AutoDoForkDecalDist",
+  "AutoDoForkBlinkerDistH", "AutoDoForkNavDistH", "AutoUpRoadLimit",
+  "AutoUpRoadLimit40KMH", "AutoUpHighwayRoadLimit", "AutoUpHighwayRoadLimit40KMH",
+  "RoadType", "AutoForkDecalRateH", "AutoForkSpeedMinH", "AutoKeepForkSpeedH",
+  "AutoForkDecalRate", "AutoForkSpeedMin", "AutoKeepForkSpeed",
+  "ShowDebugLog", "AutoCurveSpeedFactorH", "AutoCurveSpeedAggressivenessH",
+  "SameSpiCamFilter", "StockBlinkerCtrl", "ExtBlinkerCtrlTest",
+  "BlinkerMode", "LaneStabTime", "DynamicBlindRange", "DynamicBlindDistance",
+  "DisableBlindSpot", "BsdDelayTime", "SideBsdDelayTime",
+  "SideRelDistTime", "SidevRelDistTime", "SideRadarMinDist",
+  "LidarBsdDelayTime", "LidarFrontVDistTime", "LidarFrontVRelDistTime",
+  "LidarBehindVDistTime", "LidarBehindVRelDistTime", "LaneLineDelayTime",
+  "AutoTurnInNotRoadEdge", "ContinuousLaneChange", "ContinuousLaneChangeCnt",
+  "ContinuousLaneChangeInterval", "AutoTurnLeft",
+  "AutoEnTurnNewLaneTimeH", "AutoEnTurnNewLaneTime",
+  "NewLaneWidthDiff", "DynamicExperimentalSpeed", "DynamicExperimentalLatA",
+  "AtcResumeDelay", "AtcResumeCnt",
+}
+
 def get_all_toggle_values():
   """导出所有 OpenPilot 参数值，bytes -> str"""
   all_keys = get_default_params_key()
@@ -28,8 +51,13 @@ def get_all_toggle_values():
 
 
 def store_toggle_values(updated_values):
-  """将前端发送的 JSON 写入 OpenPilot Params"""
+  """S-3: 将前端发送的 JSON 写入 OpenPilot Params。
+  仅允许白名单内的键，防止未授权修改行车参数。"""
   for key, value in updated_values.items():
+    # S-3: 白名单检查 —— 拒绝不在 PARAM_KEY_WHITELIST 中的键
+    if key not in PARAM_KEY_WHITELIST:
+      print(f"[S-3] rejected non-whitelisted params key: {key}")
+      continue
     try:
       params.put(key, value.encode('utf-8'))
     except Exception as e:
@@ -65,16 +93,26 @@ class WebInterface:
                 pass
 
             def do_OPTIONS(self):
-                """处理CORS预检请求"""
+                """S-3: 处理CORS预检请求 —— 仅反射本机 Origin，不再使用通配符 *。"""
                 try:
                     self.send_response(200)
-                    self.send_header('Access-Control-Allow-Origin', '*')
+                    self.send_header('Access-Control-Allow-Origin', self._cors_origin())
                     self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, DELETE')
                     self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
                     self.send_header('Access-Control-Max-Age', '86400')
                     self.end_headers()
                 except Exception as e:
                     print(f"OPTIONS请求处理错误: {e}")
+
+            def _cors_origin(self):
+                """S-3: 返回安全的 Access-Control-Allow-Origin 值。
+                仅当请求方是本机 (127.0.0.1 / localhost) 时反射其 Origin，
+                否则返回空串（等效于拒绝跨域），彻底移除通配符 '*'。"""
+                origin = self.headers.get('Origin')
+                if origin and (origin.startswith('http://127.0.0.1')
+                               or origin.startswith('http://localhost')):
+                  return origin
+                return ""
 
             def _origin_allowed(self):
                 """拒绝非本机来源的浏览器跨站请求，防止 CSRF 篡改行车参数"""
@@ -92,36 +130,36 @@ class WebInterface:
                     if self.path == '/':
                         self.send_response(301)
                         self.send_header('Location', '/nav_params')
-                        self.send_header('Access-Control-Allow-Origin', '*')
+                        self.send_header('Access-Control-Allow-Origin', self._cors_origin())
                         self.end_headers()
                     elif self.path == '/radar':
                         self.send_response(200)
-                        self.send_header('Access-Control-Allow-Origin', '*')
+                        self.send_header('Access-Control-Allow-Origin', self._cors_origin())
                         self.send_header('Content-type', 'text/html; charset=utf-8')
                         self.end_headers()
                         self.send_radar_page()
                     elif self.path == '/radar_data':
                         self.send_response(200)
-                        self.send_header('Access-Control-Allow-Origin', '*')
+                        self.send_header('Access-Control-Allow-Origin', self._cors_origin())
                         self.send_header('Content-type', 'application/json; charset=utf-8')
                         self.send_header('Cache-Control', 'no-cache')
                         self.end_headers()
                         self.send_radar_data()
                     elif self.path == '/nav_params':
                         self.send_response(200)
-                        self.send_header('Access-Control-Allow-Origin', '*')
+                        self.send_header('Access-Control-Allow-Origin', self._cors_origin())
                         self.send_header('Content-type', 'text/html; charset=utf-8')
                         self.end_headers()
                         self.send_nav_params_page()
                     elif self.path == '/nav_params_data':
                         self.send_response(200)
-                        self.send_header('Access-Control-Allow-Origin', '*')
+                        self.send_header('Access-Control-Allow-Origin', self._cors_origin())
                         self.send_header('Content-type', 'application/json; charset=utf-8')
                         self.end_headers()
                         self.send_nav_params_data()
                     elif self.path == '/get_default_nav_params':
                         self.send_response(200)
-                        self.send_header('Access-Control-Allow-Origin', '*')
+                        self.send_header('Access-Control-Allow-Origin', self._cors_origin())
                         self.send_header('Content-type', 'application/json; charset=utf-8')
                         self.end_headers()
                         self.send_default_nav_params()
@@ -240,7 +278,7 @@ class WebInterface:
                 try:
                     self.send_response(200)
                     self.send_header('Content-type', 'application/json; charset=utf-8')
-                    self.send_header('Access-Control-Allow-Origin', '*')
+                    self.send_header('Access-Control-Allow-Origin', self._cors_origin())
                     self.end_headers()
                     self.safe_write(json.dumps(data, ensure_ascii=False))
                 except (BrokenPipeError, ConnectionResetError) as e:
