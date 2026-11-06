@@ -35,6 +35,8 @@ PARAM_KEY_WHITELIST = {
   "AutoEnTurnNewLaneTimeH", "AutoEnTurnNewLaneTime",
   "NewLaneWidthDiff", "DynamicExperimentalSpeed", "DynamicExperimentalLatA",
   "AtcResumeDelay", "AtcResumeCnt",
+  "CarrotCooperativeMode",
+  "CarrotUdpAllowedIps",
 }
 
 def get_all_toggle_values():

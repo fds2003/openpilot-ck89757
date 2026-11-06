@@ -16,6 +16,7 @@ import cereal.messaging as messaging
 from openpilot.common.realtime import Ratekeeper
 from openpilot.common.params import Params
 from openpilot.selfdrive.carrot.config import UnifiedParams
+from openpilot.selfdrive.carrot.cooperative_mode import auto_turn_allowed
 from openpilot.common.filter_simple import MyMovingAverage
 from openpilot.system.hardware import PC, TICI
 from openpilot.selfdrive.navd.helpers import Coordinate
@@ -293,10 +294,15 @@ class CarrotServ:
     #new
     self.atcType = "none"
 
+    # 协同模式：车机意图优先时禁用 C3 自主 ATC；车机失联自动回退
+    self.cooperative_mode = True
+    self.hu_alive = False
+
     self.update_params()
 
   def update_params(self):
     if (self.param_frame % 10) == 0:
+      self.cooperative_mode = self.params.get_bool("CarrotCooperativeMode", True)
       self.autoNaviSpeedBumpSpeed = float(self.params.get_int("AutoNaviSpeedBumpSpeed"))
       self.autoNaviSpeedBumpTime = float(self.params.get_int("AutoNaviSpeedBumpTime"))
       self.autoNaviSpeedCtrlEnd = float(self.params.get_int("AutoNaviSpeedCtrlEnd"))
@@ -1180,6 +1186,12 @@ class CarrotServ:
                    f"atc_speed={atc_speed_org:.1f},{atc_speed:.1f},fork keep:{self.fork_speed_keep_time:.1f}s,{self.atc_speed_decal:.1f}km/h,paused={self.atc_paused}"
                    )
       print(debugText)
+
+    # 协同模式 + 车机在线：保留转弯/匝道速度规划，但不发布自主转向类型，
+    # 避免与车机意图叠加。车机失联时自动回退 C3 自主。
+    if not auto_turn_allowed(self.cooperative_mode, self.hu_alive):
+      atc_type = "none"
+      atc_speed_up = 0
 
     return atc_desired, atc_type, atc_speed, atc_dist, atc_speed_up
 

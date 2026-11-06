@@ -25,6 +25,9 @@ from openpilot.selfdrive.navd.helpers import Coordinate
 from opendbc.car.common.conversions import Conversions as CV
 
 from openpilot.selfdrive.carrot.carrot_serv import CarrotServ
+from openpilot.selfdrive.carrot.cooperative_mode import hu_alive
+from openpilot.selfdrive.carrot.udp_trust import evaluate as udp_trust_evaluate, parse_allowed
+from openpilot.selfdrive.carrot.traffic_light import bridge_state_allowed, is_fresh
 
 from openpilot.common.realtime import DT_MDL
 
@@ -209,6 +212,9 @@ class CarrotMan:
     self.broadcast_ip = self.get_broadcast_address()
     self.broadcast_port = 7705
     self.carrot_man_port = 7706
+    # S-5: 车机旧协议接收口绑定地址可配置。默认 0.0.0.0 以恢复跨主机通信；
+    # 仅本机调试时可设 CARROT_BIND_HOST=127.0.0.1。白名单仍然生效。
+    self.bind_host = os.environ.get("CARROT_BIND_HOST", "0.0.0.0")
     self.connection = None
 
     # S-5: UDP 接收端绑定 127.0.0.1 并启用源 IP 白名单，拒绝局域网/远端伪造遥测。
@@ -218,6 +224,9 @@ class CarrotMan:
     # 可通过 UnifiedParams 扩展为同网段受信主机；默认拒绝 0.0.0.0。
     self._udp_source_whitelist = set()
     self._udp_source_whitelist_loaded = False
+    self._udp_allowed_ips = set()     # S-5: CarrotUdpAllowedIps 显式白名单
+    self._udp_allowed_ts = 0.0        # S-5: 白名单刷新时间
+    self._trust_local_ip = ""         # S-5: 本地 IP 缓存
     # S-1: ZMQ 通道（7710）共享令牌，默认生成一次性随机值；
     # 部署方应通过 env/param 固定同一值以保持跨版本兼容。
     self._zmq_token = os.environ.get("CARROT_ZMQ_TOKEN") or uuid.uuid4().hex[:16]
@@ -325,6 +334,15 @@ class CarrotMan:
 
   def get_data_amap_navi(self):
     #获取共享数据
+    # 协同模式：车机存活判定（发现探针 app_ip_ts，15s 超时）
+    sd = self.amap_navi.shared_data
+    self.carrot_serv.hu_alive = hu_alive(getattr(sd, "app_ip_ts", None))
+    # 红绿灯：DETECT 优先；无 DETECT 时采用 adbridge 4215 的新鲜状态
+    if bridge_state_allowed(self.carrot_serv.traffic_light_count, sd.traffic_state_ts):
+      self.carrot_serv.traffic_state = sd.traffic_state
+    elif self.carrot_serv.traffic_light_count <= 0 and sd.traffic_state_ts > 0 and not is_fresh(sd.traffic_state_ts):
+      self.carrot_serv.traffic_state = 0
+      sd.traffic_state_ts = 0.0
     self.carrot_serv.ext_blinker = self.amap_navi.shared_data.ext_blinker
     self.carrot_serv.ext_state = self.amap_navi.shared_data.ext_state
     self.carrot_serv.left_lane = True if self.amap_navi.shared_data.left_lane > 0 else False
@@ -618,19 +636,38 @@ class CarrotMan:
     msg['trafficState'] = self.trafficState
     return json.dumps(msg)
 
+  def _trust_local(self) -> str:
+    ip = self._trust_local_ip
+    if not ip or ip.startswith("127."):
+      try:
+        ip = socket.gethostbyname(socket.gethostname())
+      except Exception:
+        ip = ""
+    if not ip or ip.startswith("127."):
+      try:
+        ip = self.get_local_ip()
+        if ip.startswith("Error"):
+          ip = ""
+      except Exception:
+        ip = ""
+    self._trust_local_ip = ip
+    return ip
+
   def _udp_trusted(self, remote_addr) -> bool:
-    """S-5: 源 IP 白名单检查。默认仅允许 127.0.0.1 及首次连接学习的主机。"""
+    """S-5: 默认仅允许回环/已学习/显式白名单；未配白名单时只学习同网段主机。"""
     ip = remote_addr[0]
-    if ip == "127.0.0.1" or ip == "::1":
-      return True
-    if self._udp_source_whitelist_loaded:
-      return ip in self._udp_source_whitelist
-    # 首次连接学习阶段：仅接受 127.0.0.1；其他源加入白名单但打印告警
-    if ip not in self._udp_source_whitelist:
-      print(f"[S-5] UDP whitelist learning new source: {ip} port={remote_addr[1]}")
+    now = time.time()
+    if now - self._udp_allowed_ts > 10.0:
+      self._udp_allowed_ips = parse_allowed(self.params.get("CarrotUdpAllowedIps"))
+      self._udp_allowed_ts = now
+    trusted, learn = udp_trust_evaluate(
+      ip, self._trust_local(), self._udp_source_whitelist, self._udp_allowed_ips)
+    if learn:
+      print(f"[S-5] UDP whitelist learning same-subnet source: {ip} port={remote_addr[1]}")
       self._udp_source_whitelist.add(ip)
-    self._udp_source_whitelist_loaded = True
-    return True
+    elif not trusted:
+      print(f"[S-5] UDP rejected source: {ip}")
+    return trusted
 
   def receive_fixed_length_data(self, sock, length):
     buffer = b""
@@ -647,9 +684,8 @@ class CarrotMan:
       try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
           sock.settimeout(10)  # 소켓 타임아웃 설정 (10초)
-          # S-5: bind to loopback only. The companion app runs on the same
-          # head-unit host (127.0.0.1).  Reject all other sources via whitelist.
-          sock.bind(('127.0.0.1', self.carrot_man_port))  # S-5: loopback bind
+          # S-5: 车机旧协议入口，绑定地址由 CARROT_BIND_HOST 控制（默认 0.0.0.0）。
+          sock.bind((self.bind_host, self.carrot_man_port))
           print("#########carrot_man_thread: UDP thread started...")
 
           while True:

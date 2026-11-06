@@ -5,8 +5,11 @@ selfdrive/carrot/tests/run_all_tdd_tests.py
 现代库斯途 Comma 3 (cp 分支) —— TDD 全自动化单元测试主运行器
 =====================================================================
 """
+import os
 import sys
 import unittest
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
 
 def main():
   print("=" * 70)
@@ -28,6 +31,15 @@ def main():
   from test_mpv_smooth_lane_change import TestMpvSmoothLaneChange
   from test_c3_cooperative_modifications import TestC3CooperativeModifications
   from test_amap_navi_networking import TestAmapNaviNetworking
+  from test_bind_host_contract import TestCarrotBindHost
+  from test_lane_postprocess import TestDecode, TestSelectLaneTypes
+  from test_lane_image import TestNv12ToRgb, TestInputTensor
+  from test_lane_protocol import TestLanePayload
+  from test_lane_runtime import TestCheckRuntime, TestDependencyContract
+  from test_cooperative_mode import TestHuAlive, TestAutoTurnAllowed, TestWiring as TestCooperativeWiring
+  from test_udp_trust import TestSameSubnet, TestEvaluate, TestParseAllowed, TestWiring as TestUdpTrustWiring
+  from test_traffic_light import (TestStateFromWire, TestFreshness, TestPrecedence,
+                                  TestWiring as TestTrafficLightWiring)
   from test_real_code_contract import TestRealCodeContract
   # F-18~F-22 TDD modules
   from test_f18_front_rear import TestF18FrontRearCopyPaste
@@ -55,6 +67,26 @@ def main():
   suite.addTests(loader.loadTestsFromTestCase(TestMpvSmoothLaneChange))
   suite.addTests(loader.loadTestsFromTestCase(TestC3CooperativeModifications))
   suite.addTests(loader.loadTestsFromTestCase(TestAmapNaviNetworking))
+  suite.addTests(loader.loadTestsFromTestCase(TestCarrotBindHost))
+  # C3 lane_runner (VisionIPC -> lane.onnx -> UDP 4213)
+  suite.addTests(loader.loadTestsFromTestCase(TestDecode))
+  suite.addTests(loader.loadTestsFromTestCase(TestSelectLaneTypes))
+  suite.addTests(loader.loadTestsFromTestCase(TestNv12ToRgb))
+  suite.addTests(loader.loadTestsFromTestCase(TestInputTensor))
+  suite.addTests(loader.loadTestsFromTestCase(TestLanePayload))
+  suite.addTests(loader.loadTestsFromTestCase(TestCheckRuntime))
+  suite.addTests(loader.loadTestsFromTestCase(TestDependencyContract))
+  suite.addTests(loader.loadTestsFromTestCase(TestHuAlive))
+  suite.addTests(loader.loadTestsFromTestCase(TestAutoTurnAllowed))
+  suite.addTests(loader.loadTestsFromTestCase(TestCooperativeWiring))
+  suite.addTests(loader.loadTestsFromTestCase(TestSameSubnet))
+  suite.addTests(loader.loadTestsFromTestCase(TestEvaluate))
+  suite.addTests(loader.loadTestsFromTestCase(TestParseAllowed))
+  suite.addTests(loader.loadTestsFromTestCase(TestUdpTrustWiring))
+  suite.addTests(loader.loadTestsFromTestCase(TestStateFromWire))
+  suite.addTests(loader.loadTestsFromTestCase(TestFreshness))
+  suite.addTests(loader.loadTestsFromTestCase(TestPrecedence))
+  suite.addTests(loader.loadTestsFromTestCase(TestTrafficLightWiring))
   suite.addTests(loader.loadTestsFromTestCase(TestRealCodeContract))
   # F-18~F-22
   suite.addTests(loader.loadTestsFromTestCase(TestF18FrontRearCopyPaste))

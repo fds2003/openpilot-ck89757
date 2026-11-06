@@ -1,0 +1,10 @@
+# lane_runner：C3 端车道线 ONNX 推理依赖
+#
+# 安装（C3/AGNOS）：
+#   pip install -r selfdrive/carrot/requirements_lane.txt
+#
+# 说明：
+# - 默认 PyPI wheel 提供 CPUExecutionProvider；
+# - 若 AGNOS 上可安装 OpenCL 构建，可替换为 onnxruntime-opencl（lane_runner 会自动优先选择）；
+# - 不写入 pyproject.toml/uv.lock：避免镜像源改写全局锁文件，且该依赖仅 C3 需要。
+onnxruntime >= 1.18

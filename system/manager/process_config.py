@@ -144,6 +144,7 @@ procs = [
   #PythonProcess("amap_navi", "selfdrive.carrot.amap_navi", always_run),  # 由 carrot_man 内嵌实例独占 UDP，避免双实例端口竞争
   #PythonProcess("lane", "selfdrive.carrot.lane", check_lane and only_onroad),
   PythonProcess("lane", "selfdrive.carrot.lane", only_onroad),
+  PythonProcess("lane_runner", "selfdrive.carrot.lane_runner", only_onroad),
 ]
 
 managed_processes = {p.name: p for p in procs}

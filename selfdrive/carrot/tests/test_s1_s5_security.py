@@ -88,20 +88,20 @@ class TestS3WebInterfaceCORSAndParams(unittest.TestCase):
 
 
 class TestS4AmapNaviUdpBinds(unittest.TestCase):
-  """S-4: amap_navi.py UDP ports bound to loopback + source whitelist."""
+  """S-4: amap_navi.py head-unit UDP ports use CARROT_BIND_HOST (default 0.0.0.0) + source whitelist."""
 
-  def test_amap_navi_no_0000_bind(self):
+  def test_amap_navi_bind_host_configurable(self):
     text = _read(AMAP_NAVI)
-    # Active 0.0.0.0 bind() calls must be gone (comments only allowed).
-    active_binds = len(re.findall(r"bind\(\s*\(?\s*'0\.0\.0\.0'", text))
-    self.assertEqual(active_binds, 0,
-                     "S-4 GREEN: no active 0.0.0.0 UDP binds expected")
+    self.assertIn('os.environ.get("CARROT_BIND_HOST", "0.0.0.0")', text,
+                  "S-4 GREEN: bind host must be configurable, default 0.0.0.0")
+    for port in ("4210", "self.navi_remote_port", "self.lane_port", "self.listen_port"):
+      self.assertIn("bind((self.bind_host, %s))" % port, text,
+                    f"S-4 GREEN: bind {port} must use self.bind_host")
 
-  def test_amap_navi_loopback_bind(self):
+  def test_amap_navi_no_hardcoded_loopback(self):
     text = _read(AMAP_NAVI)
-    loopback_binds = len(re.findall(r"bind\(\s*\(?\s*'127\.0\.0\.1'", text))
-    self.assertGreaterEqual(loopback_binds, 4,
-                            f"S-4 GREEN: expected >=4 loopback UDP binds, found {loopback_binds}")
+    m = re.search(r"bind\(\('127\.0\.0\.1',\s*(4210|self\.navi_remote_port|self\.lane_port|self\.listen_port)\)", text)
+    self.assertIsNone(m, "S-4 GREEN: head-unit ports must not be hardcoded to 127.0.0.1")
 
   def test_amap_navi_source_whitelist(self):
     text = _read(AMAP_NAVI)
@@ -109,12 +109,14 @@ class TestS4AmapNaviUdpBinds(unittest.TestCase):
 
 
 class TestS5CarrotManUdpBinds(unittest.TestCase):
-  """S-5: carrot_man.py UDP bound to loopback + source whitelist."""
+  """S-5: carrot_man.py legacy UDP uses CARROT_BIND_HOST; management ports stay loopback."""
 
-  def test_udp_7706_loopback_bind(self):
+  def test_udp_7706_bind_host_configurable(self):
     text = _read(CARROT_MAN)
-    m = re.search(r"sock\.bind\(\('127\.0\.0\.1',\s*self\.carrot_man_port\)\)", text)
-    self.assertIsNotNone(m, "S-5 GREEN: UDP 7706 loopback bind expected")
+    self.assertIn('os.environ.get("CARROT_BIND_HOST", "0.0.0.0")', text,
+                  "S-5 GREEN: bind host must be configurable, default 0.0.0.0")
+    m = re.search(r"sock\.bind\(\(self\.bind_host,\s*self\.carrot_man_port\)\)", text)
+    self.assertIsNotNone(m, "S-5 GREEN: UDP 7706 must use self.bind_host")
 
   def test_udp_12345_loopback_bind(self):
     text = _read(CARROT_MAN)

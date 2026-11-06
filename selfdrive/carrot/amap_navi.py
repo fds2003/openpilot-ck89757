@@ -1,4 +1,5 @@
 import json
+import os
 import time
 import threading
 import socket
@@ -10,6 +11,8 @@ from openpilot.common.realtime import Ratekeeper
 #from openpilot.common.params import Params
 from openpilot.system.hardware import PC
 from openpilot.selfdrive.carrot.config import UnifiedParams
+from openpilot.selfdrive.carrot.udp_trust import evaluate as udp_trust_evaluate, parse_allowed
+from openpilot.selfdrive.carrot.traffic_light import BRIDGE_TL_PORT, state_from_wire
 
 BLINKER_NONE = 0
 BLINKER_LEFT = 1
@@ -143,6 +146,10 @@ class SharedData:
     self.remote_cmd = ""
     self.remote_arg = ""
     self.overtake_mode = 1 # 0:激进, 1:常规, 2:保守
+    #红绿灯（adbridge 4215）
+    self.traffic_state = 0
+    self.traffic_state_ts = 0.0
+    self.traffic_light_cd = -1
     self.behind_ttc = 0.0 # 后方时距；0.0 = 无效/缺失哨兵，desire_helper 一律阻断变道
     self.app_ip = None # 车机IP
     self.ext_blinker = BLINKER_NONE # 外挂控制器转向灯状态
@@ -198,10 +205,15 @@ class AmapNaviServ:
     self.lane_port = 4213  # 监听地址
     self.navi_port = 7706        # C3 遥测【发送】目标 = 车机 PORT_TELEMETRY (7706)
     self.navi_remote_port = 7705  # C3 指令【接收】监听端口 = 车机 PORT_CONTROL (7705)
-    # S-4: 接收端默认绑定 127.0.0.1（loopback），防止局域网/远端伪造遥测。
-    # 仅向【已学习】的 app 源 IP 发送广播；本地接收地址不再是 0.0.0.0。
-    self.local_ip_address = "127.0.0.1" #S-4: loopback（原 "0.0.0.0"）
-    self._udp_source_whitelist = set()  # S-4: 首次连接学习后的受信源 IP 集合
+    self.traffic_light_port = BRIDGE_TL_PORT  # adbridge 红绿灯上行端口
+    # S-4: 接收端绑定地址可配置。默认 0.0.0.0 以恢复车机跨主机通信；
+    # 需要仅本机调试时可设 CARROT_BIND_HOST=127.0.0.1。
+    # 源 IP 白名单仍然生效（_udp_trusted），但首次连接会自动学习。
+    self.bind_host = os.environ.get("CARROT_BIND_HOST", "0.0.0.0")
+    self.local_ip_address = ""  # 由 _data_deal_thread 在运行期解析为实际 wlan IP
+    self._udp_source_whitelist = set()  # S-4: 同网段学习后的受信源 IP 集合
+    self._udp_allowed_ips = set()       # S-4: CarrotUdpAllowedIps 显式白名单
+    self._trust_local_ip = ""           # S-4: 用于同网段判定的本地 IP 缓存
 
     self.clients = {}  # 保存多个客户端
     self.client_queues = {}  # {ip: Queue()}
@@ -343,6 +355,7 @@ class AmapNaviServ:
 
   def update_param(self):
     if self.frame % 100 == 0:
+      self._udp_allowed_ips = parse_allowed(self.params.get("CarrotUdpAllowedIps"))
       self.lidarBsdDelayTime = self.params.get_int("LidarBsdDelayTime") * 0.1
       self.lidarFrontVDistTime = self.params.get_int("LidarFrontVDistTime") * 0.1
       self.lidarFrontVRelDistTime = self.params.get_int("LidarFrontVRelDistTime") * 0.1
@@ -599,17 +612,35 @@ class AmapNaviServ:
     # 新增: 5510 探针自动握手线程与 7705 控制指令接收线程
     threading.Thread(target=self._discovery_responder_thread, daemon=True).start()
     threading.Thread(target=self._headunit_cmd_recv_thread, daemon=True).start()
+    threading.Thread(target=self._traffic_light_recv_thread, daemon=True).start()
+
+  def _trust_local(self) -> str:
+    ip = self.local_ip_address or self._trust_local_ip
+    if not ip or ip.startswith("127."):
+      try:
+        ip = socket.gethostbyname(socket.gethostname())
+      except Exception:
+        ip = ""
+    if not ip or ip.startswith("127."):
+      try:
+        ip = self.navi_get_local_ip()
+        if ip.startswith("Error"):
+          ip = ""
+      except Exception:
+        ip = ""
+    self._trust_local_ip = ip
+    return ip
 
   def _udp_trusted(self, ip) -> bool:
-    """S-4: 源 IP 白名单检查。仅允许 127.0.0.1/::1 与【已学习】的受信主机。"""
-    if ip in ("127.0.0.1", "::1"):
-      return True
-    if ip in self._udp_source_whitelist:
-      return True
-    # 首次连接学习阶段：加入白名单并打印告警；后续严格匹配。
-    print(f"[S-4] UDP whitelist learning new source: {ip}")
-    self._udp_source_whitelist.add(ip)
-    return True
+    """S-4: 默认仅允许回环/已学习/显式白名单；未配白名单时只学习同网段主机。"""
+    trusted, learn = udp_trust_evaluate(
+      ip, self._trust_local(), self._udp_source_whitelist, self._udp_allowed_ips)
+    if learn:
+      print(f"[S-4] UDP whitelist learning same-subnet source: {ip}")
+      self._udp_source_whitelist.add(ip)
+    elif not trusted:
+      print(f"[S-4] UDP rejected source: {ip}")
+    return trusted
 
   def _discovery_responder_thread(self):
     """对齐车机 UdpDeviceDiscovery：车机 5510 -> 广播 4210，期望 resp=c3_pong"""
@@ -617,8 +648,8 @@ class AmapNaviServ:
       s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
       s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
       try:
-        # S-4: 绑定 loopback 而非 0.0.0.0；仅接受白名单源
-        s.bind(('127.0.0.1', 4210))
+        # S-4: 绑定地址由 CARROT_BIND_HOST 控制（默认 0.0.0.0）
+        s.bind((self.bind_host, 4210))
       except Exception as e:
         print(f"Discovery bind 4210 error: {e}")
         return
@@ -676,8 +707,8 @@ class AmapNaviServ:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
       s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
       try:
-        # S-4: 绑定 loopback，仅接受白名单源
-        s.bind(('127.0.0.1', self.navi_remote_port))
+        # S-4: 绑定地址由 CARROT_BIND_HOST 控制（默认 0.0.0.0）
+        s.bind((self.bind_host, self.navi_remote_port))
       except Exception as e:
         print(f"Cmd bind {self.navi_remote_port} error: {e}")
         return
@@ -690,6 +721,30 @@ class AmapNaviServ:
           self._process_single_packet(data, addr)
         except Exception:
           time.sleep(0.05)
+  def _traffic_light_recv_thread(self):
+    """监听 adbridge 4215 红绿灯报文，写入 shared_data.traffic_state。"""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+      s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+      try:
+        s.bind((self.bind_host, self.traffic_light_port))
+      except Exception as e:
+        print(f"traffic light bind {self.traffic_light_port} error: {e}")
+        return
+      while True:
+        try:
+          data, addr = s.recvfrom(512)
+          if not self._udp_trusted(addr[0]):
+            continue
+          obj = json.loads(data.decode("utf-8", "ignore"))
+          self.shared_data.traffic_state = state_from_wire(obj.get("tl"))
+          self.shared_data.traffic_state_ts = time.time()
+          try:
+            self.shared_data.traffic_light_cd = int(obj.get("cd", -1))
+          except (TypeError, ValueError):
+            self.shared_data.traffic_light_cd = -1
+        except Exception:
+          time.sleep(0.01)
+
   #数据处理线程
   def _data_deal_thread(self):
     _clients = {}
@@ -842,8 +897,8 @@ class AmapNaviServ:
   def _lane_recv_thread(self):
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
       sock.settimeout(3)
-      # S-4: 绑定 loopback，仅接受白名单源
-      sock.bind(('127.0.0.1', self.lane_port))
+      # S-4: 绑定地址由 CARROT_BIND_HOST 控制（默认 0.0.0.0）
+      sock.bind((self.bind_host, self.lane_port))
       print("lane receive thread started...")
       while True:
         try:
@@ -903,8 +958,8 @@ class AmapNaviServ:
   def _udp_recv_thread(self):
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
       sock.settimeout(10)
-      # S-4: 绑定 loopback，仅接受白名单源
-      sock.bind(('127.0.0.1', self.listen_port))
+      # S-4: 绑定地址由 CARROT_BIND_HOST 控制（默认 0.0.0.0）
+      sock.bind((self.bind_host, self.listen_port))
       print("UDP receive thread started...")
       while True:
         try:
