@@ -430,6 +430,11 @@ class CarrotPlanner:
           self.events.add(EventName.trafficSignGreen)
       self.stopping_count = max(0, self.stopping_count - 1)
       v_cruise = 0
+      # S1 红灯停稳锁零：停稳且仍在红灯(非绿灯起步)时把 actual_stop_distance
+      # 归零，杜绝停稳后残留 5.0m 假巡航距离导致的蠕动。
+      # stopping_count>0 表示已停稳持续若干帧(100ms 级防抖)，避免起步瞬间误触发。
+      if self.stopping_count > 0 and self.trafficState != TrafficState.green:
+        self.actual_stop_distance = 0.0
     elif self.xState == XState.e2eStop:
       self.stopping_count = 0
       if carstate.gasPressed:  # Stop detecting traffic signal for 10 seconds
