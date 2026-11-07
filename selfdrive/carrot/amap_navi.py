@@ -151,6 +151,7 @@ class SharedData:
     self.traffic_state_ts = 0.0
     self.traffic_light_cd = -1
     self.behind_ttc = 0.0 # 后方时距；0.0 = 无效/缺失哨兵，desire_helper 一律阻断变道
+    self.driver_steering = False # 驾驶员主动转向标志（扭矩与转角反向），供车机接管检测
     self.app_ip = None # 车机IP
     self.ext_blinker = BLINKER_NONE # 外挂控制器转向灯状态
     self.ext_state = 0  # 外挂控制器的数量
@@ -586,6 +587,16 @@ class AmapNaviServ:
         self.shared_data.aEgo = round(carState.aEgo, 1)
       if hasattr(carState, 'steeringAngleDeg'):
         self.shared_data.steer_angle = round(carState.steeringAngleDeg, 1)
+      # BUG-1：扭矩与转角方向相反 → 驾驶员主动抵抗 OP 转向（轻推接管检测）
+      if hasattr(carState, 'steeringTorqueEps') and hasattr(carState, 'steeringAngleDeg'):
+        torque = carState.steeringTorqueEps
+        angle = carState.steeringAngleDeg
+        self.shared_data.driver_steering = (
+            abs(torque) > 0.5 and   # 忽略噪声扭矩
+            (torque * angle < 0)     # 方向相反
+        )
+      else:
+        self.shared_data.driver_steering = False
       if hasattr(carState, 'gasPressed'):
         self.shared_data.gas_press = carState.gasPressed
       if hasattr(carState, 'brakePressed'):
@@ -1804,6 +1815,8 @@ class AmapNaviServ:
           msg["aego"] = self.shared_data.aEgo
         if self.shared_data.steer_angle is not None:
           msg["steer_angle"] = self.shared_data.steer_angle
+        # BUG-1：下发 driver_steering，车机接管检测依赖此字段（否则恒 false）
+        msg["driver_steering"] = self.shared_data.driver_steering
         if self.shared_data.gas_press is not None:
           msg["gas_press"] = self.shared_data.gas_press
         if self.shared_data.break_press is not None:
@@ -1944,6 +1957,18 @@ class AmapNaviServ:
         op_blocked = ("none" not in atc_type and "prepare" not in atc_type)
         self.shared_data.op_blocked = op_blocked
         self.shared_data.road_blocked = ("隧道" in road_name) or (x_spd_type >= 0 and 0 < x_spd_dist < 500)
+
+        # BUG-2：从稳定的 carrotMan.atcType 字符串派生 atc_state，消除对 modelV2.alive
+        # 的依赖（modelV2 偶发不 alive 时变道完成确认不再丢失/退化为超时）。
+        # 下方 modelV2 路径若 alive 仍会用更精准的 meta.laneChangeState.raw 覆盖。
+        if "laneChangeFinishing" in atc_type:
+          msg["atc_state"] = 3
+        elif "laneChangeStarting" in atc_type:
+          msg["atc_state"] = 2
+        elif "preLaneChange" in atc_type:
+          msg["atc_state"] = 1
+        else:
+          msg["atc_state"] = 0
 
       msg['blind_enable'] = (self.shared_data.lidar_l or self.shared_data.camera_l) and (self.shared_data.lidar_r or self.shared_data.camera_r)
       msg['op_blocked'] = self.shared_data.op_blocked
