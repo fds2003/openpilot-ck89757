@@ -2,6 +2,15 @@
 
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null && pwd )"
 
+# ===== venv PATH 兜底（2026-11-07）：manager.py 用 #!/usr/bin/env python3，
+# 若 boot 环境 PATH 未含 venv，import capnp 会失败。venv 存在则前置，幂等。 =====
+if [ -d /usr/local/venv/bin ]; then
+  case ":$PATH:" in
+    *":/usr/local/venv/bin:"*) ;;
+    *) export PATH="/usr/local/venv/bin:$PATH" ;;
+  esac
+fi
+
 # ===== 时区兜底（2026-10-12）：/data/etc/localtime 为空/缺失时默认 Asia/Shanghai =====
 # 手机 carrot App 同步时区成功后 set_time() 会自动重建链接，与本兜底不冲突
 if [ ! -s /data/etc/localtime ]; then
