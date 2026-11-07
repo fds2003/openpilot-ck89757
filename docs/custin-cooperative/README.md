@@ -53,6 +53,13 @@
 | `08_验证与交付.md` | TDD 流程、测试结果、真实模型实测、验收标准 |
 | `09_四端联合核验.md` | 当前权威协议核验与可运行性判定 |
 | `10_上车验证清单.md` | 54 项实车检查 |
+| `11_仪表移植方案.md` | 原厂 HSAE 仪表移植设计、字段映射、测试与风险 |
+| `12_仪表投影布局对照.md` | custin/cluster 的 Parcel 布局对照与偏差清单 |
+| `13_原厂三包与仪表投影分析.md` | 三个原厂 APK 的角色、仪表链路、显示码语义、IPC 契约 |
+| `14_原厂三包功能全景与架构拆解.md` | 三个原厂 APK 的全功能矩阵、架构分层、跨 App IPC 与改造启示 |
+| `15_L1共存切换实施方案.md` | 高德替代百度导航、保留原车功能的 L1 共存方案与工作分解 |
+| `16_L1详细架构与实现设计.md` | L1 的组件架构、线程模型、状态机、代码级实现设计与测试设计 |
+| `17_未完成工作与剩余事项.md` | 待完成/待实车标定事项总表（ADAS/L1/广播/C3/工程），按执行顺序 |
 
 ---
 
@@ -70,3 +77,35 @@
 
 `archive/` 保留整合前的全部原始文档，包括早期设计、历轮审计、整改交付等。
 合并文档只保留结论、关键证据与待办，细节可回溯 archive 中的原件。
+
+---
+
+## 6. 真车标定脚本
+
+`scripts/calibrate_cluster.sh`（两仓均有副本）用于在 HSAE 车机上逐项验证
+仪表投影与 ADAS 电子地平线（transact 14），把仪表实际反应回填到
+`AdasPayloadCodec`/`ClusterMapper` 语义名。
+
+**使用方式**（PC 端 Git Bash / WSL，adb 能连车机）：
+
+```bash
+# 全流程：打开仪表投影页 → 检测 HSAE → 逐帧 TBT/图标/ADAS
+./scripts/calibrate_cluster.sh
+
+# 只发某个 displayType 标定帧（如 96 环岛）
+./scripts/calibrate_cluster.sh --seq 96
+
+# 只发 ADAS Position 测试帧（type 458）
+./scripts/calibrate_cluster.sh --adas
+
+# 指定 adb 设备（多设备时）
+ADB_DEVICE=192.168.x.x:5555 ./scripts/calibrate_cluster.sh
+```
+
+要点：
+- 车机需装 Reborn v1.4.0+ 且为系统应用/平台签名（可写 HSAE 仪表）。
+- 每发一帧立即观察仪表对应区域（箭头/限速/弯道/罗盘/进度）反应并记录。
+- 脚本靠 `uiautomator dump` 定位按钮；车机 UI 高刷新时 dump 偶发失败，
+  先 `--seq 65` 单帧冒烟再跑全流程。
+- 标定结果回填：`AdasPayloadCodec` 注释、`ClusterMapper.mapTurnType`
+  候选码、`17_未完成工作与剩余事项.md` 勾选 `[实车]`。
