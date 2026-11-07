@@ -55,6 +55,18 @@ def main():
     TestS5CarrotManUdpBinds,
   )
   from test_op_corrections import TestOP01OverpassFilter, TestOP06StoppingBranchDecay
+  # 19号文档 立即档 Q-4/Q-5/Q-6
+  from test_quality_fixes_q4_q5_q6 import (
+    TestQ4TurnTypeMapSingleSource,
+    TestQ5SpeedHistDeque,
+    TestQ6LbRbDrelOwnership,
+  )
+  # 19号文档 近期档 Q-2/Q-7/Q-8
+  from test_quality_fixes_q2_q7_q8 import (
+    TestQ2MessageRefactor,
+    TestQ7ParseExceptionLayering,
+    TestQ8NamingAndEncapsulation,
+  )
 
   suite.addTests(loader.loadTestsFromTestCase(TestSecuritySwitches))
   suite.addTests(loader.loadTestsFromTestCase(TestLogRotation))
@@ -103,6 +115,14 @@ def main():
   # OP corrections RED tests
   suite.addTests(loader.loadTestsFromTestCase(TestOP01OverpassFilter))
   suite.addTests(loader.loadTestsFromTestCase(TestOP06StoppingBranchDecay))
+  # 19号文档 立即档 Q-4/Q-5/Q-6
+  suite.addTests(loader.loadTestsFromTestCase(TestQ4TurnTypeMapSingleSource))
+  suite.addTests(loader.loadTestsFromTestCase(TestQ5SpeedHistDeque))
+  suite.addTests(loader.loadTestsFromTestCase(TestQ6LbRbDrelOwnership))
+  # 19号文档 近期档 Q-2/Q-7/Q-8
+  suite.addTests(loader.loadTestsFromTestCase(TestQ2MessageRefactor))
+  suite.addTests(loader.loadTestsFromTestCase(TestQ7ParseExceptionLayering))
+  suite.addTests(loader.loadTestsFromTestCase(TestQ8NamingAndEncapsulation))
   runner = unittest.TextTestRunner(verbosity=2)
   result = runner.run(suite)
 

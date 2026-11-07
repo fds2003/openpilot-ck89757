@@ -6,6 +6,7 @@ import socket
 import fcntl
 import struct
 import queue
+import collections
 import cereal.messaging as messaging
 from openpilot.common.realtime import Ratekeeper
 #from openpilot.common.params import Params
@@ -13,6 +14,7 @@ from openpilot.system.hardware import PC
 from openpilot.selfdrive.carrot.config import UnifiedParams
 from openpilot.selfdrive.carrot.udp_trust import evaluate as udp_trust_evaluate, parse_allowed
 from openpilot.selfdrive.carrot.traffic_light import BRIDGE_TL_PORT, state_from_wire
+from openpilot.common.swaglog import cloudlog
 
 BLINKER_NONE = 0
 BLINKER_LEFT = 1
@@ -20,9 +22,6 @@ BLINKER_RIGHT = 2
 BLINKER_BOTH = 3
 
 DT_BROADCAST = 0.1
-
-lock = threading.Lock()
-data_queue = queue.Queue()
 
 class RadarSpeedEstimator:
   """
@@ -35,7 +34,7 @@ class RadarSpeedEstimator:
     self.last_speed = None   # 修改：初始化由 0.0 改为 None，更合理
     self.max_acc = max_acc  # m/s²
     self.smooth_n = smooth_n
-    self.speed_hist = []
+    self.speed_hist = collections.deque(maxlen=smooth_n)
     self.lost_timeout_ms = lost_timeout_ms # 修改点：新增丢失超时参数
 
   def update(self, dist_mm, t_ms):
@@ -88,10 +87,8 @@ class RadarSpeedEstimator:
     return self._update_hist(filtered_speed)
 
   def _update_hist(self, speed):
-    """滑动平均（只对非 None 值）"""
+    """滑动平均（只对非 None 值），deque(maxlen) 自动弹出最旧元素"""
     self.speed_hist.append(speed)
-    if len(self.speed_hist) > self.smooth_n:
-      self.speed_hist.pop(0)
     return sum(self.speed_hist) / len(self.speed_hist)
 
 class SharedData:
@@ -186,15 +183,17 @@ class SharedData:
 
     self.showDebugLog = 0
 
-def f1(x):
+def round1(x):
   return round(float(x), 1)
-def f2(x):
+def round2(x):
   return round(float(x), 2)
 
 class AmapNaviServ:
   def __init__(self):
     self.shared_data = SharedData() #new
     self.params = UnifiedParams()
+    # Q-7: UDP 解析路径 malformed 包计数（JSONDecodeError/UnicodeDecodeError 累加）
+    self._malformed_count = 0
     #self.sm = messaging.SubMaster(['carState', 'modelV2', 'selfdriveState', 'radarState', 'carrotMan'])
     self.sm = messaging.SubMaster(['modelV2', 'selfdriveState', 'radarState', 'carrotMan'])
     self.pm = messaging.PubMaster(['amapNavi'])
@@ -215,6 +214,10 @@ class AmapNaviServ:
     self._udp_source_whitelist = set()  # S-4: 同网段学习后的受信源 IP 集合
     self._udp_allowed_ips = set()       # S-4: CarrotUdpAllowedIps 显式白名单
     self._trust_local_ip = ""           # S-4: 用于同网段判定的本地 IP 缓存
+
+    # Q-8: 客户端状态锁与数据队列内聚为实例属性（原模块级 lock/data_queue）
+    self._lock = threading.Lock()
+    self._data_queue = queue.Queue(5)  # maxsize=5，防 UDP 突发堆积
 
     self.clients = {}  # 保存多个客户端
     self.client_queues = {}  # {ip: Queue()}
@@ -582,7 +585,7 @@ class AmapNaviServ:
         self.shared_data.v_cruise_kph = carState.vCruise
       if hasattr(carState, 'vEgo'):
         self.shared_data.v_ego_m = carState.vEgo
-        self.shared_data.vEgo = f1(carState.vEgo * 3.6)
+        self.shared_data.vEgo = round1(carState.vEgo * 3.6)
       if hasattr(carState, 'aEgo'):
         self.shared_data.aEgo = round(carState.aEgo, 1)
       if hasattr(carState, 'steeringAngleDeg'):
@@ -677,7 +680,7 @@ class AmapNaviServ:
           now = time.time()
           self.shared_data.app_ip = ip
           self.shared_data.app_ip_ts = now
-          with lock:
+          with self._lock:
             if ip not in self.clients:
               self.clients[ip] = {}
             self.clients[ip].update({
@@ -770,7 +773,7 @@ class AmapNaviServ:
         self.solid_line_blind()
 
         #拷贝客户端列表
-        with lock:
+        with self._lock:
           _clients = getattr(self, "clients", {}).copy()
         _active_clients = list(_clients.keys())
 
@@ -981,7 +984,7 @@ class AmapNaviServ:
             continue
 
           # 为新客户端创建队列和处理线程
-          with lock:
+          with self._lock:
             if ip not in self.client_queues:
               q = queue.Queue()
               self.client_queues[ip] = q
@@ -1010,7 +1013,7 @@ class AmapNaviServ:
           self._process_single_packet(data, addr)
         except queue.Empty:
           # 检查线程是否需要退出
-          with lock:
+          with self._lock:
             if not self.client_active.get(ip, False):
               # 删除队列和标记
               del self.client_queues[ip]
@@ -1026,7 +1029,7 @@ class AmapNaviServ:
   def _process_single_packet(self, data, addr):
     ip, port = addr
     now = time.time()
-    with lock:
+    with self._lock:
       old_info = self.clients.get(ip, {})
 
     try:
@@ -1036,9 +1039,17 @@ class AmapNaviServ:
       self._update_control(json_obj, ip, old_info, now)
       self._update_sensors(json_obj, ip, old_info, now)
       if (self.shared_data.showDebugLog & 32) > 0: print(f"receive: {json_obj}")
-    except Exception as e:
-      print(f"Process packet {ip} error: {e}")
-      print(data)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+      # Q-7: 坏包（解码失败/非 JSON）只计数后 return，不中断解析线程
+      self._malformed_count += 1
+      if self._malformed_count % 100 == 1:
+        cloudlog.warning(f"amap_navi malformed packet from {ip} (count={self._malformed_count})")
+    except KeyError as e:
+      # Q-7: 解析成功但字段缺失 -> warning（带来源 IP）
+      cloudlog.warning(f"amap_navi KeyError from {ip}: {e}")
+    except Exception:
+      # Q-7: 兜底 -> 完整 traceback，避免静默吞掉未知异常
+      cloudlog.exception(f"amap_navi packet error from {ip}")
 
   # ----------------------
   # 控制命令
@@ -1080,7 +1091,7 @@ class AmapNaviServ:
     if "blinker" not in json_obj:
       return
     val = json_obj.get("blinker")
-    with lock:
+    with self._lock:
       # 车机下发的是整数码（LaneAction.kt：1=左 / 2=右 / 0=关）；
       # 同时保留旧字符串协议（left/stockleft/right/stockright）兼容其他客户端。
       if val in ["left", "stockleft", 1, "1"]:
@@ -1103,7 +1114,7 @@ class AmapNaviServ:
   def _update_command(self, json_obj, ip):
     if self.shared_data.app_ip is not None and ip != self.shared_data.app_ip:
       return  # 拒绝热点内第三方注入；本机回环测试请在 fixture 中设置 app_ip
-    with lock:
+    with self._lock:
       idx = json_obj.get("index") or json_obj.get("seq")
       try:
         idx = int(idx)
@@ -1386,7 +1397,7 @@ class AmapNaviServ:
         if (now - lidar_rbblind_time) > 2. and lidar_rbblind is not None: lidar_rbblind = False
 
         # ---------- 更新客户端信息 ----------
-        with lock:
+        with self._lock:
           now = time.time()
           self.clients[ip] = {
             "port": int(json_obj.get("port", self.broadcast_port)),
@@ -1431,7 +1442,7 @@ class AmapNaviServ:
         if (now - r_blindspot_time) > 2. and right_blind is not None: right_blind = False
 
         # ---------- 更新客户端信息 ----------
-        with lock:
+        with self._lock:
           now = time.time()
           self.clients[ip] = {
             "port": int(json_obj.get("port", self.broadcast_port)),
@@ -1452,7 +1463,7 @@ class AmapNaviServ:
     else:
       # ---------- 更新客户端信息 ----------
       try:
-        with lock:
+        with self._lock:
           now = time.time()
           self.clients[ip] = {
             "port": int(json_obj.get("port", self.broadcast_port)),
@@ -1600,7 +1611,7 @@ class AmapNaviServ:
     if (now - r_blindspot_time) > 2. : info["right_blind"] = False
 
     #更新client的数据
-    with lock:
+    with self._lock:
       old_info = self.clients.get(ip, {})
       if old_info:
         self.clients[ip] = info
@@ -1643,7 +1654,7 @@ class AmapNaviServ:
     if (now - lidar_rbblind_time) > 2. : info["lidar_rbblind"] = False
 
     # 更新client的数据
-    with lock:
+    with self._lock:
       old_info = self.clients.get(ip, {})
       if old_info:
         self.clients[ip] = info
@@ -1655,7 +1666,7 @@ class AmapNaviServ:
     while True:
       try:
         now = time.time()
-        with lock:
+        with self._lock:
           active_clients = {}
           for c_ip, c_info in self.clients.items():
             try:
@@ -1698,7 +1709,7 @@ class AmapNaviServ:
       try:
         #self.sm.update(0)
         # 修改: 获取当前活跃客户端
-        with lock:
+        with self._lock:
           self.clients_copy = getattr(self, "clients", {}).copy()
           self.active_clients = list(self.clients_copy.keys())
 
@@ -1711,7 +1722,7 @@ class AmapNaviServ:
             if ip_address != self.local_ip_address:
               self.local_ip_address = ip_address
               self.clients_copy = {}
-              with lock:
+              with self._lock:
                 self.clients = {}  # 修改: 本地 IP 变化时清空客户端
 
             # 消息
@@ -1794,21 +1805,11 @@ class AmapNaviServ:
         time.sleep(1)
 
   def make_navi_message(self):
-    msg = {}
-    msg['ip'] = self.local_ip_address
-    msg['port'] = self.listen_port
-    msg['device'] = "op"
-    isOnroad = self.params.get_bool("IsOnroad")
-    msg['IsOnroad'] = isOnroad
+    msg, isOnroad = self._build_base_fields()
 
     if isOnroad:
-      #车辆状态
+      #车辆状态（navi 版多带 vEgo/aEgo/steer/driver_steering/盲区，保留在此处）
       if self.shared_data.carState:
-        if self.shared_data.v_cruise_kph is not None:
-          #msg["cruise_speed"] = self.shared_data.v_cruise_kph  # 巡航速度
-          msg['v_cruise_kph'] = self.shared_data.v_cruise_kph  # 巡航速度
-        if self.shared_data.v_ego_kph is not None:
-          msg['v_ego_kph'] = self.shared_data.v_ego_kph  # 当前速度
         if self.shared_data.vEgo is not None:
           msg["vego"] = self.shared_data.vEgo
         if self.shared_data.aEgo is not None:
@@ -1905,7 +1906,10 @@ class AmapNaviServ:
       msg['lidar_rblind'] = self.right_blindspot()
 
       #雷达距离数据
-      fields = ["lf_drel", "lb_drel", "rf_drel", "rb_drel", "lf_xrel", "lb_xrel", "rf_xrel", "rb_xrel"]
+      # Q-6: lb_drel/rb_drel 由下方 M-13 main_* 覆盖逻辑统一负责，
+      # 不参与 fields 循环（否则 idx==0 时写入的原始值要么被无条件覆盖、
+      # 要么被 pop，是隐性死代码）。
+      fields = ["lf_drel", "rf_drel", "lf_xrel", "lb_xrel", "rf_xrel", "rb_xrel"]
       # 找出所有 field 的所有 lidar_id
       all_lidar_ids = set()
       for f in fields:
@@ -1940,9 +1944,9 @@ class AmapNaviServ:
       if self.shared_data.roadcate is not None:
         msg['roadcate'] = self.shared_data.roadcate
       if self.shared_data.lat_a is not None:
-        msg['lat_a'] = f2(self.shared_data.lat_a)
+        msg['lat_a'] = round2(self.shared_data.lat_a)
       if self.shared_data.max_curve is not None:
-        msg['max_curve'] = f2(self.shared_data.max_curve)
+        msg['max_curve'] = round2(self.shared_data.max_curve)
 
       # carrotMan数据
       if self.sm.alive['carrotMan']:
@@ -2031,7 +2035,7 @@ class AmapNaviServ:
             max_orientation_rate = orientation_rate_z[max_index]
             #curvature_value = float(max_orientation_rate)
             #curvature_direction = 1 if max_orientation_rate > 0 else -1
-            msg['max_curve'] = f1(max_orientation_rate)
+            msg['max_curve'] = round1(max_orientation_rate)
 
         # 如果字段存在才赋值
         if self.shared_data.leftFrontBlind is None and hasattr(meta, 'leftFrontBlind'):
@@ -2039,6 +2043,32 @@ class AmapNaviServ:
         if self.shared_data.rightFrontBlind is None and hasattr(meta, 'rightFrontBlind'):
           msg['r_front_blind'] = meta.rightFrontBlind
 
+    self._apply_cruise_state(msg)
+
+    return json.dumps(msg)
+
+  def _build_base_fields(self):
+    """Q-2: 三个 make_*_message 公共基础字段（逐字一致部分）。
+
+    各函数保留各自差异部分（navi 多 vEgo/aEgo/steer/driver_steering/盲区，
+    blinker 多 gas_press/break_press），不在此处合并。
+    """
+    msg = {}
+    msg['ip'] = self.local_ip_address
+    msg['port'] = self.listen_port
+    msg['device'] = "op"
+    isOnroad = self.params.get_bool("IsOnroad")
+    msg['IsOnroad'] = isOnroad
+    if isOnroad:
+      if self.shared_data.carState:
+        if self.shared_data.v_cruise_kph is not None:
+          msg['v_cruise_kph'] = self.shared_data.v_cruise_kph  # 巡航速度
+        if self.shared_data.v_ego_kph is not None:
+          msg['v_ego_kph'] = self.shared_data.v_ego_kph  # 当前速度
+    return msg, isOnroad
+
+  def _apply_cruise_state(self, msg):
+    """Q-2: 三处逐字重复的巡航状态推导（selfdriveState/cruise_valid/engaged）。"""
     #===============巡航状态处理==============
     if self.sm.alive['selfdriveState']:
       selfdrive = self.sm['selfdriveState']
@@ -2059,42 +2089,11 @@ class AmapNaviServ:
     if not msg.get('engaged', False):
       msg['engaged'] = cruise_enable
 
-    return json.dumps(msg)
-
   def make_lidar_message(self):
-    msg = {}
-    msg['ip'] = self.local_ip_address
-    msg['port'] = self.listen_port
-    msg['device'] = "op"
-    isOnroad = self.params.get_bool("IsOnroad")
-    msg['IsOnroad'] = isOnroad
+    msg, isOnroad = self._build_base_fields()
 
     if isOnroad:
-      if self.shared_data.carState:
-        if self.shared_data.v_cruise_kph is not None:
-          msg['v_cruise_kph'] = self.shared_data.v_cruise_kph  # 巡航速度
-        if self.shared_data.v_ego_kph is not None:
-          msg['v_ego_kph'] = self.shared_data.v_ego_kph  # 当前速度
-
-      #===============巡航状态处理==============
-      if self.sm.alive['selfdriveState']:
-        selfdrive = self.sm['selfdriveState']
-        self.shared_data.selfdrive_active = True if selfdrive.active else False
-      # 巡航系统是否已激活
-      if self.shared_data.cruise_valid is not None:
-        msg['active'] = self.shared_data.cruise_valid
-      # 是否在巡航
-      cruise_enable = False
-      #if self.shared_data.cruise_enable is not None and self.shared_data.cruise_enable:
-      #  cruise_enable = True
-      if self.shared_data.selfdrive_active is not None and self.shared_data.selfdrive_active:
-        cruise_enable = True
-      # 在巡航，active强制为True
-      if cruise_enable:
-        msg['active'] = True
-      # 若engaged不存在则赋值巡航状态
-      if not msg.get('engaged', False):
-        msg['engaged'] = cruise_enable
+      self._apply_cruise_state(msg)
 
       if self.sm.alive['carrotMan']:
         carrotMan = self.sm['carrotMan']
@@ -2104,22 +2103,11 @@ class AmapNaviServ:
     return json.dumps(msg)
 
   def make_blinker_message(self):
-    msg = {}
-    msg['ip'] = self.local_ip_address
-    msg['port'] = self.listen_port
-    msg['device'] = "op"
-    isOnroad = self.params.get_bool("IsOnroad")
-    msg['IsOnroad'] = isOnroad
+    msg, isOnroad = self._build_base_fields()
 
     if isOnroad:
-      # 车辆状态
+      # 车辆状态（blinker 版多带 gas_press/break_press，保留在此处）
       if self.shared_data.carState:
-        if self.shared_data.v_cruise_kph is not None:
-          msg['v_cruise_kph'] = self.shared_data.v_cruise_kph  # 巡航速度
-        if self.shared_data.v_ego_kph is not None:
-          msg['v_ego_kph'] = self.shared_data.v_ego_kph  # 当前速度
-        if self.shared_data.vEgo is not None:
-          msg["vego"] = self.shared_data.vEgo
         if self.shared_data.gas_press is not None:
           msg["gas_press"] = self.shared_data.gas_press
         if self.shared_data.break_press is not None:
@@ -2131,11 +2119,11 @@ class AmapNaviServ:
         if hasattr(radar_state, 'leadOne') and radar_state.leadOne and hasattr(radar_state.leadOne,'status') and radar_state.leadOne.status:
           msg["lead1"] = True
           if hasattr(radar_state.leadOne, 'dRel'):
-            msg["drel"] = f1(radar_state.leadOne.dRel)
+            msg["drel"] = round1(radar_state.leadOne.dRel)
           if hasattr(radar_state.leadOne, 'vLead'):
-            msg["vlead"] = f1(radar_state.leadOne.vLead * 3.6)
+            msg["vlead"] = round1(radar_state.leadOne.vLead * 3.6)
           if hasattr(radar_state.leadOne, 'vRel'):
-            msg["vrel"] = f1(radar_state.leadOne.vRel * 3.6)
+            msg["vrel"] = round1(radar_state.leadOne.vRel * 3.6)
           if hasattr(radar_state.leadOne, 'aRel'):
             msg["lead_accel"] = radar_state.leadOne.aRel
         else:
@@ -2158,26 +2146,7 @@ class AmapNaviServ:
           else:
             msg['blinker'] = "stockright"
 
-
-    #===============巡航状态处理==============
-    if self.sm.alive['selfdriveState']:
-      selfdrive = self.sm['selfdriveState']
-      self.shared_data.selfdrive_active = True if selfdrive.active else False
-    # 巡航系统是否已激活
-    if self.shared_data.cruise_valid is not None:
-      msg['active'] = self.shared_data.cruise_valid
-    # 是否在巡航
-    cruise_enable = False
-    #if self.shared_data.cruise_enable is not None and self.shared_data.cruise_enable:
-    #  cruise_enable = True
-    if self.shared_data.selfdrive_active is not None and self.shared_data.selfdrive_active:
-      cruise_enable = True
-    # 在巡航，active强制为True
-    if cruise_enable:
-      msg['active'] = True
-    # 若engaged不存在则赋值巡航状态
-    if not msg.get('engaged', False):
-      msg['engaged'] = cruise_enable
+    self._apply_cruise_state(msg)
 
     return json.dumps(msg)
 
