@@ -34,7 +34,11 @@ ACCEL_LIMIT = 1.5*3.6  # m/s²*3.6=km/h，舒适加减速限制
 RESTORE_UP_ACCEL_LIMIT = 3.0*3.6
 RESTORE_DOWN_ACCEL_LIMIT = 1.5*3.6
 
-nav_type_mapping = {
+# Q-4: 原顶层 nav_type_mapping 与 _update_tbt 内局部 turn_type_mapping 两份
+# 重复定义已合并为单一字典（取并集，键无缺失，仅值冲突 7 处：
+#   14/201 取 _update_tbt 的 7/8（update_nav_instruction 中 None 为死值），
+#   51-55 取顶层的 None（0 在 >0 判断下与 None 等效））。
+TURN_TYPE_MAP = {
   12: ("turn", "left", 1),
   16: ("turn", "sharp left", 1),
   1000: ("turn", "slight left", 1),
@@ -78,8 +82,8 @@ nav_type_mapping = {
   138: ("rotary", "sharp left", 5),
   139: ("rotary", "left", 5),
   142: ("rotary", "straight", 5),
-  14: ("turn", "uturn", 5),
-  201: ("arrive", "straight", 5),
+  14: ("turn", "uturn", 7),
+  201: ("arrive", "straight", 8),
   51: ("notification", "straight", None),
   52: ("notification", "straight", None),
   53: ("notification", "straight", None),
@@ -472,71 +476,15 @@ class CarrotServ:
 
   def _update_tbt(self):
     #xTurnInfo : 1: left turn, 2: right turn, 3: left lane change, 4: right lane change, 5: rotary, 6: tg, 7: arrive or uturn
-    turn_type_mapping = {
-      12: ("turn", "left", 1),
-      16: ("turn", "sharp left", 1),
-      #new
-      1000: ("turn", "slight left", 1),
-      1001: ("turn", "slight right", 2),
-      1002: ("fork", "slight left", 3),
-      1003: ("fork", "slight right", 4),
-      1006: ("off ramp", "left", 3),
-      1007: ("off ramp", "right", 4),
-      #new
-      13: ("turn", "right", 2),
-      19: ("turn", "sharp right", 2),
-      102: ("off ramp", "slight left", 3),
-      105: ("off ramp", "slight left", 3),
-      112: ("off ramp", "slight left", 3),
-      115: ("off ramp", "slight left", 3),
-      101: ("off ramp", "slight right", 4),
-      104: ("off ramp", "slight right", 4),
-      111: ("off ramp", "slight right", 4),
-      114: ("off ramp", "slight right", 4),
-      7: ("fork", "left", 3),
-      44: ("fork", "left", 3),
-      17: ("fork", "left", 3),
-      75: ("fork", "left", 3),
-      76: ("fork", "left", 3),
-      118: ("fork", "left", 3),
-      6: ("fork", "right", 4),
-      43: ("fork", "right", 4),
-      73: ("fork", "right", 4),
-      74: ("fork", "right", 4),
-      123: ("fork", "right", 4),
-      124: ("fork", "right", 4),
-      117: ("fork", "right", 4),
-      131: ("rotary", "slight right", 5),
-      132: ("rotary", "slight right", 5),
-      140: ("rotary", "slight left", 5),
-      141: ("rotary", "slight left", 5),
-      133: ("rotary", "right", 5),
-      134: ("rotary", "sharp right", 5),
-      135: ("rotary", "sharp right", 5),
-      136: ("rotary", "sharp left", 5),
-      137: ("rotary", "sharp left", 5),
-      138: ("rotary", "sharp left", 5),
-      139: ("rotary", "left", 5),
-      142: ("rotary", "straight", 5),
-      14: ("turn", "uturn", 7),
-      201: ("arrive", "straight", 8),
-      51: ("notification", "straight", 0),
-      52: ("notification", "straight", 0),
-      53: ("notification", "straight", 0),
-      54: ("notification", "straight", 0),
-      55: ("notification", "straight", 0),
-      153: ("", "", 6),  #TG
-      154: ("", "", 6),  #TG
-      249: ("", "", 6)   #TG
-    }
+    # Q-4: 使用模块顶层统一字典 TURN_TYPE_MAP（原局部 turn_type_mapping 已删除）
 
-    if self.nTBTTurnType in turn_type_mapping:
-      self.navType, self.navModifier, self.xTurnInfo = turn_type_mapping[self.nTBTTurnType]
+    if self.nTBTTurnType in TURN_TYPE_MAP:
+      self.navType, self.navModifier, self.xTurnInfo = TURN_TYPE_MAP[self.nTBTTurnType]
     else:
       self.navType, self.navModifier, self.xTurnInfo = "invalid", "", -1
 
-    if self.nTBTTurnTypeNext in turn_type_mapping:
-      self.navTypeNext, self.navModifierNext, self.xTurnInfoNext = turn_type_mapping[self.nTBTTurnTypeNext]
+    if self.nTBTTurnTypeNext in TURN_TYPE_MAP:
+      self.navTypeNext, self.navModifierNext, self.xTurnInfoNext = TURN_TYPE_MAP[self.nTBTTurnTypeNext]
     else:
       self.navTypeNext, self.navModifierNext, self.xTurnInfoNext = "invalid", "", -1
 
@@ -1207,7 +1155,7 @@ class CarrotServ:
       self.xDistToTurnNav = int(msg_nav.maneuverDistance)
       self.szTBTMainText = msg_nav.maneuverPrimaryText
       self.xTurnInfo = -1
-      for key, value in nav_type_mapping.items():
+      for key, value in TURN_TYPE_MAP.items():
         if value[0] == msg_nav.maneuverType and value[1] == msg_nav.maneuverModifier:
           self.xTurnInfo = value[2]
           break
@@ -1591,11 +1539,11 @@ class CarrotServ:
       instruction.timeRemainingTypical = self.nGoPosTime
 
       navType, navModifier, xTurnInfo1 = "invalid", "", -1
-      if self.nTBTTurnType in nav_type_mapping:
-        navType, navModifier, xTurnInfo1 = nav_type_mapping[self.nTBTTurnType]
+      if self.nTBTTurnType in TURN_TYPE_MAP:
+        navType, navModifier, xTurnInfo1 = TURN_TYPE_MAP[self.nTBTTurnType]
       navTypeNext, navModifierNext, xTurnInfoNext = "invalid", "", -1
-      if self.nTBTTurnTypeNext in nav_type_mapping:
-        navTypeNext, navModifierNext, xTurnInfoNext = nav_type_mapping[self.nTBTTurnTypeNext]
+      if self.nTBTTurnTypeNext in TURN_TYPE_MAP:
+        navTypeNext, navModifierNext, xTurnInfoNext = TURN_TYPE_MAP[self.nTBTTurnTypeNext]
 
       instruction.maneuverType = navType
       instruction.maneuverModifier = navModifier
