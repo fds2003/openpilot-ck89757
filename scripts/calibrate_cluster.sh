@@ -114,6 +114,9 @@ main() {
       note "看仪表是否有 ADAS 车道/航向区反应（零值帧）"
       tap_text "发送 ADAS Position 测试帧"
       return ;;
+    --ux2)
+      run_ux2_calibration
+      return ;;
   esac
 
   log "1. 打开仪表投影页"
@@ -152,6 +155,45 @@ main() {
   echo "  - cluster/AdasPayloadCodec.kt（字段语义注释）"
   echo "  - cluster/ClusterMapper.mapTurnType（图标候选码）"
   echo "  - docs/custin-cooperative/17_未完成工作与剩余事项.md（勾选 [实车]）"
+}
+
+# ============================================================================
+# UX-2 专项：高德转向图标 → 候选 displayType 逐一标定
+# 每个候选码发送后暂停 WAIT 秒供人观察仪表，并写入可回填的 CSV 记录。
+# 高德图标枚举（ClusterMapper.mapTurnType 的 key）与候选码映射：
+#   11 进环岛→96   12 出环岛→97   14 收费站→212
+#   15 驶出匝道→178  17 靠右→66    20 驶出高速→178
+# ============================================================================
+UX2_WAIT="${UX2_WAIT:-3}"   # 每个候选码后观察等待秒数，可用 UX2_WAIT=10 覆盖
+UX2_CSV="${UX2_CSV:-$(pwd)/ux2_calibration.csv}"
+
+run_ux2_calibration() {
+  log "UX-2 专项标定：转向图标候选码"
+  open_cluster_page
+  check_probe
+  # 生成 CSV 表头
+  cat > "$UX2_CSV" <<CSV
+gaode_icon,candidate_code,meaning,cluster_reaction,correct_code,notes
+CSV
+  step "记录写入 $UX2_CSV；每帧发后等 ${UX2_WAIT}s 观察，逐行填 cluster_reaction/correct_code"
+
+  # icon 候选码 含义
+  UX2_CODES="11:96:进环岛 12:97:出环岛 14:212:收费站 15:178:驶出匝道 17:66:靠右 20:178:驶出高速"
+  for entry in $UX2_CODES; do
+    icon="${entry%%:*}"; rest="${entry#*:}"
+    code="${rest%%:*}"; meaning="${rest#*:}"
+    step "发候选码 $code（高德图标 ${icon}=$meaning）"
+    note "观察仪表箭头区：$meaning 应显示为？记录到 CSV 对应行"
+    # spinner 选 "$code $meaning" 再点发送（沿用 send_display_type 逻辑，此处直接发码）
+    send_display_type "$code" "$meaning"
+    # 写一行占位 CSV（人填 cluster_reaction/correct_code）
+    echo "$icon,$code,$meaning,,,,待观察" >> "$UX2_CSV"
+    sleep "$UX2_WAIT"
+  done
+
+  log "UX-2 标定完成"
+  echo "对照 $UX2_CSV 逐行填：仪表实际反应 / 正确的 displayType。"
+  echo "回填 cluster/ClusterMapper.mapTurnType 的候选码后，把 18 号 UX-2 与 17 号 [实车] 勾选。"
 }
 
 main "$@"
