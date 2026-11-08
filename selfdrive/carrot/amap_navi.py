@@ -187,6 +187,88 @@ def round1(x):
 def round2(x):
   return round(float(x), 2)
 
+# =======================================================================================
+# Q-3: capnp 字段统一适配层
+# capnp schema 字段运行时存在性跨版本不确定，原先散落全文的 hasattr 防御调用
+# 收敛到本层：hasattr 只出现在适配器内部，内部代码读确定类型的 dataclass。
+# 单位保持原样（raw 存 capnp 原始值），int()/×3.6 换算留在调用点（协议单位不进适配器）。
+# 缺失字段用 None 哨兵区分"不存在"与"值为 0"，保证调用点按 None 跳过 → 协议帧键缺席行为不变。
+# =======================================================================================
+from dataclasses import dataclass
+
+@dataclass
+class LeadState:
+  """radarState 单侧前车（capnp leadOne/leadLeft/leadRight）适配。
+
+  raw 单位：d_rel 米、v_lead/v_rel m/s、a_rel m/s²。
+  字段 None = capnp 对象未提供该属性（调用点据此跳过，保持键缺席）。
+  """
+  status: bool = False
+  d_rel: object = None
+  v_lead: object = None
+  v_rel: object = None
+  a_rel: object = None
+
+def parse_lead(raw) -> LeadState:
+  """capnp leadX 适配器：hasattr 只在此出现。raw 为 capnp 对象或 None。
+
+  逐字段 getattr 缺省 None（保留"字段缺失"信息），status 缺省 False。
+  """
+  if raw is None:
+    return LeadState()
+  status = getattr(raw, 'status', False)
+  return LeadState(
+    status=bool(status),
+    d_rel=getattr(raw, 'dRel', None),
+    v_lead=getattr(raw, 'vLead', None),
+    v_rel=getattr(raw, 'vRel', None),
+    a_rel=getattr(raw, 'aRel', None),
+  )
+
+@dataclass
+class CarStateData:
+  """carState capnp 适配。字段 None = capnp 未提供（调用点跳过，共享数据保持默认）。"""
+  standstill: object = None
+  v_ego_cluster: object = None
+  v_cruise: object = None
+  v_ego: object = None
+  a_ego: object = None
+  steering_angle_deg: object = None
+  steering_torque_eps: object = None
+  gas_pressed: object = None
+  brake_pressed: object = None
+  cruise_present: bool = False   # capnp cruiseState 对象是否存在（原 hasattr 门控）
+  cruise_enabled: object = None
+  cruise_available: object = None
+  left_blindspot: object = None
+  right_blindspot: object = None
+
+def parse_car_state(raw) -> CarStateData:
+  """capnp carState 适配器：hasattr 只在此出现。raw 为 capnp 对象或 None。
+
+  cruiseState 为嵌套 capnp 对象：cruise_present 记录其存在性（等价原 hasattr 门控），
+  存在时再读 enabled/available；缺失时 cruise_* 保持 None。
+  """
+  if raw is None:
+    return CarStateData()
+  cruise = getattr(raw, 'cruiseState', None)
+  return CarStateData(
+    standstill=getattr(raw, 'standstill', None),
+    v_ego_cluster=getattr(raw, 'vEgoCluster', None),
+    v_cruise=getattr(raw, 'vCruise', None),
+    v_ego=getattr(raw, 'vEgo', None),
+    a_ego=getattr(raw, 'aEgo', None),
+    steering_angle_deg=getattr(raw, 'steeringAngleDeg', None),
+    steering_torque_eps=getattr(raw, 'steeringTorqueEps', None),
+    gas_pressed=getattr(raw, 'gasPressed', None),
+    brake_pressed=getattr(raw, 'brakePressed', None),
+    cruise_present=(cruise is not None),
+    cruise_enabled=(getattr(cruise, 'enabled', None) if cruise is not None else None),
+    cruise_available=(getattr(cruise, 'available', None) if cruise is not None else None),
+    left_blindspot=getattr(raw, 'leftBlindspot', None),
+    right_blindspot=getattr(raw, 'rightBlindspot', None),
+  )
+
 class AmapNaviServ:
   def __init__(self):
     self.shared_data = SharedData() #new
@@ -551,47 +633,50 @@ class AmapNaviServ:
     if sm.alive['carState']:  # and self.sm.updated['carState']:
       self.shared_data.carState = True
       carState = sm['carState']
-      if hasattr(carState, 'standstill'):
-        self.shared_data.standstill = carState.standstill
+      # Q-3: carState capnp 对象经 parse_car_state 适配，hasattr 收敛到适配层；
+      # 字段 None = capnp 未提供 → 跳过（共享数据保持默认），与原先 hasattr 缺失分支等价。
+      cs = parse_car_state(carState)
+      if cs.standstill is not None:
+        self.shared_data.standstill = cs.standstill
       else:
         if self.shared_data.v_ego_m < 0.1:
           self.shared_data.standstill = True
         else:
           self.shared_data.standstill = False
-      if hasattr(carState, 'vEgoCluster'):
-        self.shared_data.v_ego_kph = int(carState.vEgoCluster * 3.6 + 0.5)
-      if hasattr(carState, 'vCruise'):
-        self.shared_data.v_cruise_kph = carState.vCruise
-      if hasattr(carState, 'vEgo'):
-        self.shared_data.v_ego_m = carState.vEgo
-        self.shared_data.vEgo = round1(carState.vEgo * 3.6)
-      if hasattr(carState, 'aEgo'):
-        self.shared_data.aEgo = round(carState.aEgo, 1)
-      if hasattr(carState, 'steeringAngleDeg'):
-        self.shared_data.steer_angle = round(carState.steeringAngleDeg, 1)
+      if cs.v_ego_cluster is not None:
+        self.shared_data.v_ego_kph = int(cs.v_ego_cluster * 3.6 + 0.5)
+      if cs.v_cruise is not None:
+        self.shared_data.v_cruise_kph = cs.v_cruise
+      if cs.v_ego is not None:
+        self.shared_data.v_ego_m = cs.v_ego
+        self.shared_data.vEgo = round1(cs.v_ego * 3.6)
+      if cs.a_ego is not None:
+        self.shared_data.aEgo = round(cs.a_ego, 1)
+      if cs.steering_angle_deg is not None:
+        self.shared_data.steer_angle = round(cs.steering_angle_deg, 1)
       # BUG-1：扭矩与转角方向相反 → 驾驶员主动抵抗 OP 转向（轻推接管检测）
-      if hasattr(carState, 'steeringTorqueEps') and hasattr(carState, 'steeringAngleDeg'):
-        torque = carState.steeringTorqueEps
-        angle = carState.steeringAngleDeg
+      if cs.steering_torque_eps is not None and cs.steering_angle_deg is not None:
+        torque = cs.steering_torque_eps
+        angle = cs.steering_angle_deg
         self.shared_data.driver_steering = (
             abs(torque) > 0.5 and   # 忽略噪声扭矩
             (torque * angle < 0)     # 方向相反
         )
       else:
         self.shared_data.driver_steering = False
-      if hasattr(carState, 'gasPressed'):
-        self.shared_data.gas_press = carState.gasPressed
-      if hasattr(carState, 'brakePressed'):
-        self.shared_data.break_press = carState.brakePressed
-      if hasattr(carState, 'cruiseState'):
-        self.shared_data.engaged = carState.cruiseState.enabled
-        self.shared_data.cruise_valid = carState.cruiseState.available
-        self.shared_data.cruise_enable = carState.cruiseState.enabled
+      if cs.gas_pressed is not None:
+        self.shared_data.gas_press = cs.gas_pressed
+      if cs.brake_pressed is not None:
+        self.shared_data.break_press = cs.brake_pressed
+      if cs.cruise_present:
+        self.shared_data.engaged = cs.cruise_enabled
+        self.shared_data.cruise_valid = cs.cruise_available
+        self.shared_data.cruise_enable = cs.cruise_enabled
       # 盲区检测
-      if hasattr(carState, 'leftBlindspot'):
-        self.shared_data.left_blindspot = int(carState.leftBlindspot)
-      if hasattr(carState, 'rightBlindspot'):
-        self.shared_data.right_blindspot = int(carState.rightBlindspot)
+      if cs.left_blindspot is not None:
+        self.shared_data.left_blindspot = int(cs.left_blindspot)
+      if cs.right_blindspot is not None:
+        self.shared_data.right_blindspot = int(cs.right_blindspot)
 
   # =======================================================================================
   def start_navi_comm(self):
@@ -1840,42 +1925,45 @@ class AmapNaviServ:
       # 雷达数据
       if self.sm.alive['radarState']:# and self.sm.updated['radarState']:
         radar_state = self.sm['radarState']
-        # 当前车道前车
-        if hasattr(radar_state, 'leadOne') and radar_state.leadOne and hasattr(radar_state.leadOne,'status') and radar_state.leadOne.status:
+        # 当前车道前车（Q-3: leadOne 经 parse_lead 适配，hasattr 收敛到适配层）
+        lead = parse_lead(getattr(radar_state, 'leadOne', None))
+        if lead.status:
           msg["lead1"] = True
-          if hasattr(radar_state.leadOne, 'dRel'):
-            msg["drel"] = int(radar_state.leadOne.dRel)
-          if hasattr(radar_state.leadOne, 'vLead'):
-            msg["vlead"] = int(radar_state.leadOne.vLead * 3.6)
-          if hasattr(radar_state.leadOne, 'vRel'):
-            msg["vrel"] = int(radar_state.leadOne.vRel * 3.6)
-          if hasattr(radar_state.leadOne, 'aRel'):
-            msg["lead_accel"] = radar_state.leadOne.aRel
+          if lead.d_rel is not None:
+            msg["drel"] = int(lead.d_rel)
+          if lead.v_lead is not None:
+            msg["vlead"] = int(lead.v_lead * 3.6)
+          if lead.v_rel is not None:
+            msg["vrel"] = int(lead.v_rel * 3.6)
+          if lead.a_rel is not None:
+            msg["lead_accel"] = lead.a_rel
         else:
           msg["lead1"] = False
         if not self.disableBlindSpot:
           # 左侧前车
-          if hasattr(radar_state, 'leadLeft') and radar_state.leadLeft and hasattr(radar_state.leadLeft,'status') and radar_state.leadLeft.status:
+          lead = parse_lead(getattr(radar_state, 'leadLeft', None))
+          if lead.status:
             self.lead_left_right = True
             msg["l_lead"] = True
-            if hasattr(radar_state.leadLeft, 'dRel'):
-              msg["l_drel"] = int(radar_state.leadLeft.dRel)
-            if hasattr(radar_state.leadLeft, 'vLead'):
-              msg["l_vlead"] = int(radar_state.leadLeft.vLead * 3.6)
-            if hasattr(radar_state.leadLeft, 'vRel'):
-              msg["l_vrel"] = int(radar_state.leadLeft.vRel * 3.6)
+            if lead.d_rel is not None:
+              msg["l_drel"] = int(lead.d_rel)
+            if lead.v_lead is not None:
+              msg["l_vlead"] = int(lead.v_lead * 3.6)
+            if lead.v_rel is not None:
+              msg["l_vrel"] = int(lead.v_rel * 3.6)
           else:
             msg["l_lead"] = False
           # 右侧前车
-          if hasattr(radar_state, 'leadRight') and radar_state.leadRight and hasattr(radar_state.leadRight,'status') and radar_state.leadRight.status:
+          lead = parse_lead(getattr(radar_state, 'leadRight', None))
+          if lead.status:
             self.lead_left_right = True
             msg["r_lead"] = True
-            if hasattr(radar_state.leadRight, 'dRel'):
-              msg["r_drel"] = int(radar_state.leadRight.dRel)
-            if hasattr(radar_state.leadRight, 'vLead'):
-              msg["r_vlead"] = int(radar_state.leadRight.vLead * 3.6)
-            if hasattr(radar_state.leadRight, 'vRel'):
-              msg["r_vrel"] = int(radar_state.leadRight.vRel * 3.6)
+            if lead.d_rel is not None:
+              msg["r_drel"] = int(lead.d_rel)
+            if lead.v_lead is not None:
+              msg["r_vlead"] = int(lead.v_lead * 3.6)
+            if lead.v_rel is not None:
+              msg["r_vrel"] = int(lead.v_rel * 3.6)
           else:
             msg["r_lead"] = False
         else:
@@ -2120,17 +2208,18 @@ class AmapNaviServ:
       # 雷达数据
       if self.sm.alive['radarState']:  # and self.sm.updated['radarState']:
         radar_state = self.sm['radarState']
-        # 当前车道前车
-        if hasattr(radar_state, 'leadOne') and radar_state.leadOne and hasattr(radar_state.leadOne,'status') and radar_state.leadOne.status:
+        # 当前车道前车（Q-3: leadOne 经 parse_lead 适配，hasattr 收敛到适配层）
+        lead = parse_lead(getattr(radar_state, 'leadOne', None))
+        if lead.status:
           msg["lead1"] = True
-          if hasattr(radar_state.leadOne, 'dRel'):
-            msg["drel"] = round1(radar_state.leadOne.dRel)
-          if hasattr(radar_state.leadOne, 'vLead'):
-            msg["vlead"] = round1(radar_state.leadOne.vLead * 3.6)
-          if hasattr(radar_state.leadOne, 'vRel'):
-            msg["vrel"] = round1(radar_state.leadOne.vRel * 3.6)
-          if hasattr(radar_state.leadOne, 'aRel'):
-            msg["lead_accel"] = radar_state.leadOne.aRel
+          if lead.d_rel is not None:
+            msg["drel"] = round1(lead.d_rel)
+          if lead.v_lead is not None:
+            msg["vlead"] = round1(lead.v_lead * 3.6)
+          if lead.v_rel is not None:
+            msg["vrel"] = round1(lead.v_rel * 3.6)
+          if lead.a_rel is not None:
+            msg["lead_accel"] = lead.a_rel
         else:
           msg["lead1"] = False
 

@@ -73,6 +73,13 @@ def main():
     TestQ1ThreadTearing,
     TestQ1ReadPathLockSnapshot,
   )
+  # 19号文档 规划档 Q-3（hasattr 防御调用收敛到统一 capnp 适配层）
+  from test_quality_fix_q3 import (
+    TestQ3Adapters,
+    TestQ3LeadGoldenValues,
+    TestQ3CarStateGoldenValues,
+    TestQ3HasattrConvergence,
+  )
 
   suite.addTests(loader.loadTestsFromTestCase(TestSecuritySwitches))
   suite.addTests(loader.loadTestsFromTestCase(TestLogRotation))
@@ -133,6 +140,11 @@ def main():
   suite.addTests(loader.loadTestsFromTestCase(TestQ1GoldenValues))
   suite.addTests(loader.loadTestsFromTestCase(TestQ1ThreadTearing))
   suite.addTests(loader.loadTestsFromTestCase(TestQ1ReadPathLockSnapshot))
+  # 19号文档 规划档 Q-3
+  suite.addTests(loader.loadTestsFromTestCase(TestQ3Adapters))
+  suite.addTests(loader.loadTestsFromTestCase(TestQ3LeadGoldenValues))
+  suite.addTests(loader.loadTestsFromTestCase(TestQ3CarStateGoldenValues))
+  suite.addTests(loader.loadTestsFromTestCase(TestQ3HasattrConvergence))
   runner = unittest.TextTestRunner(verbosity=2)
   result = runner.run(suite)
 
