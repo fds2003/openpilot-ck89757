@@ -44,17 +44,11 @@ NetworkType = log.DeviceState.NetworkType
 
 ################ CarrotNavi
 ## 국가법령정보센터: 도로설계기준
-#V_CURVE_LOOKUP_BP = [0., 1./800., 1./670., 1./560., 1./440., 1./360., 1./265., 1./190., 1./135., 1./85., 1./55., 1./30., 1./15.]
-#V_CRUVE_LOOKUP_VALS = [300, 150, 120, 110, 100, 90, 80, 70, 60, 50, 45, 35, 30]
 V_CURVE_LOOKUP_BP = [0., 1./800., 1./670., 1./560., 1./440., 1./360., 1./265., 1./190., 1./135., 1./85., 1./55., 1./30., 1./25.]
 V_CRUVE_LOOKUP_VALS = [300, 150, 120, 110, 100, 90, 80, 70, 60, 50, 40, 15, 5]
 
 # Haversine formula to calculate distance between two GPS coordinates
-#haversine_cache = {}
 def haversine(lon1, lat1, lon2, lat2):
-    #key = (lon1, lat1, lon2, lat2)
-    #if key in haversine_cache:
-    #    return haversine_cache[key]
 
     R = 6371000  # Radius of Earth in meters
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
@@ -64,7 +58,6 @@ def haversine(lon1, lat1, lon2, lat2):
     a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
     distance = 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
-    #haversine_cache[key] = distance
     return distance
 
 
@@ -170,12 +163,7 @@ def gps_to_relative_xy(gps_path, reference_point, heading_deg):
 
 
 # Calculate curvature given three points using a faster vector-based method
-#curvature_cache = {}
 def calculate_curvature(p1, p2, p3):
-    #key = (p1, p2, p3)
-    #if key in curvature_cache:
-    #    return curvature_cache[key]
-
     v1 = (p2[0] - p1[0], p2[1] - p1[1])
     v2 = (p3[0] - p2[0], p3[1] - p2[1])
 
@@ -188,7 +176,6 @@ def calculate_curvature(p1, p2, p3):
     else:
         curvature = cross_product / (len_v1 * len_v2 * len_v1)
 
-    #curvature_cache[key] = curvature
     return curvature
 
 class CarrotMan:
@@ -439,8 +426,6 @@ class CarrotMan:
         vturn_speed = self.carrot_curve_speed(self.sm)
         coords, distances, route_speed = self.carrot_navi_route()
 
-        #print("coords=", coords)
-        #print("curvatures=", curvatures)
         self.carrot_serv.update_navi(remote_ip, self.sm, self.pm, vturn_speed, coords, distances, route_speed)
 
         if frame % 20 == 0 or remote_addr is not None:
@@ -459,17 +444,11 @@ class CarrotMan:
             if self.broadcast_ip is not None:
               dat = msg.encode('utf-8')
               sock.sendto(dat, (self.broadcast_ip, self.broadcast_port))
-            #for i in range(1, 255):
-            #  ip_tuple = socket.inet_aton(self.broadcast_ip)
-            #  new_ip = ip_tuple[:-1] + bytes([i])
-            #  address = (socket.inet_ntoa(new_ip), self.broadcast_port)
-            #  sock.sendto(dat, address)
 
             if remote_addr is None:
               if (self.carrot_serv.showDebugLog & 32) > 0:
                 print(f"Broadcasting: {self.broadcast_ip}:{msg}")
               if not self.navd_active:
-                #print("clear path_points: navd_active: ", self.navd_active)
                 self.navi_points = []
                 self.navi_points_active = False
 
@@ -496,15 +475,11 @@ class CarrotMan:
         self.navd_active = False
         self.params.remove("NavDestination")
     if not self.navi_points_active or not SHAPELY_AVAILABLE or (self.carrot_serv.active_carrot <= 1 and not self.navd_active):
-      #print(f"navi_points_active: {self.navi_points_active}, active_carrot: {self.carrot_serv.active_carrot}")
       if self.navi_points_active:
         print("navi_points_active: ", self.navi_points_active, "active_carrot: ", self.carrot_serv.active_carrot, "navd_active: ", self.navd_active)
-        #haversine_cache.clear()
-        #curvature_cache.clear()
         self.navi_points = []
         self.navi_points_active = False
         if self.active_carrot_last > 1:
-          #self.params.remove("NavDestination")
           pass
       self.active_carrot_last = self.carrot_serv.active_carrot
       return [],[],300
@@ -517,7 +492,6 @@ class CarrotMan:
     path, self.navi_points_start_index, start_point = get_path_after_distance(self.navi_points_start_index, self.navi_points, current_position, 300)
     relative_coords = []
     if path:
-        #relative_coords = gps_to_relative_xy(path, current_position, heading_deg)
         relative_coords = gps_to_relative_xy(path, start_point, heading_deg)
         # Resample relative_coords at 5m intervals using LineString
         line = LineString(relative_coords)
@@ -547,8 +521,6 @@ class CarrotMan:
                   speed = max(speed, self.carrot_serv.nRoadLimitSpeed)
                 speeds.append(speed)
                 distances.append(distance)
-            #print(f"curvatures= {[round(s, 4) for s in curvatures]}")
-            #print(f"speeds= {[round(s, 1) for s in speeds]}")
             # Apply acceleration limits in reverse to adjust speeds
             accel_limit = self.carrot_serv.autoNaviSpeedDecelRate # m/s^2
             accel_limit_kmh = accel_limit * 3.6  # Convert to km/h per second
@@ -575,22 +547,17 @@ class CarrotMan:
                 max_allowed_speed = next_out_speed + (accel_limit_kmh * time_apply)
                 adjusted_speed = min(target_speed, max_allowed_speed)
 
-                #time_wait += time_interval
                 time_wait += min(2.0, time_interval)
 
                 out_speeds[i] = adjusted_speed
 
-            #distance_advance = self.sm['carState'].vEgo * 3.0  # Advance distance by 3.0 seconds
-            #out_speed = interp(distance_advance, distances, out_speeds)
             out_speed = out_speeds[0]
-            #print(f"out_speeds= {[round(s, 1) for s in out_speeds]}")
     else:
         resampled_points = []
         resampled_distances = []
         curvatures = []
         speeds = []
         distances = []
-        #self.params.remove("NavDestination")
 
     return resampled_points, resampled_distances, out_speed #speeds, distances
 
@@ -690,8 +657,6 @@ class CarrotMan:
 
           while True:
             try:
-              #self.remote_addr = None
-              # 데이터 수신 (UDP는 recvfrom 사용)
               try:
                 data, remote_addr = sock.recvfrom(4096)  # 최대 4096 바이트 수신
                 # S-5: 仅接受白名单源；默认允许 127.0.0.1 与已学习主机
@@ -712,11 +677,6 @@ class CarrotMan:
                   print(data)
 
                 # 응답 메시지 생성 및 송신 (UDP는 sendto 사용)
-                #try:
-                #  msg = self.make_send_message()
-                #  sock.sendto(msg.encode('utf-8'), self.remote_addr)
-                #except Exception as e:
-                #  print(f"carrot_man_thread: send error...: {e}")
 
               except TimeoutError:
                 if (self.carrot_serv.showDebugLog & 32) > 0:
@@ -772,27 +732,19 @@ class CarrotMan:
 
           while True:
             try:
-              #self.remote_addr = None
-              # 데이터 수신 (UDP는 recvfrom 사용)
               try:
                 data, remote_addr = sock.recvfrom(4096)  # 최대 4096 바이트 수신
                 # S-5: 源 IP 白名单检查
                 if not self._udp_trusted(remote_addr):
                   continue
-                #print(f"Received data from {self.remote_addr}")
 
                 if not data:
                   raise ConnectionError("No data received")
 
-                #if self.remote_addr is None:
-                #  print("Connected to: ", remote_addr)
-                #self.remote_addr = remote_addr
                 try:
                   print(data)
                   kisa_data = self.parse_kisa_data(data)
                   self.carrot_serv.update_kisa(kisa_data)
-                  #json_obj = json.loads(data.decode())
-                  #print(json_obj)
                 except Exception as e:
                   traceback.print_exc()
                   print(f"kisa_app_thread: json error...: {e}")
@@ -801,22 +753,18 @@ class CarrotMan:
               except TimeoutError:
                 if (self.carrot_serv.showDebugLog & 32) > 0:
                   print("Waiting for data (timeout)...")
-                #self.remote_addr = None
                 time.sleep(1)
 
               except Exception as e:
                 print(f"kisa_app_thread: error...: {e}")
-                #self.remote_addr = None
                 break
 
             except Exception as e:
               print(f"kisa_app_thread: recv error...: {e}")
-              #self.remote_addr = None
               break
 
           time.sleep(1)
       except Exception as e:
-        #self.remote_addr = None
         print(f"Network error, retrying...: {e}")
         time.sleep(2)
 
@@ -866,12 +814,6 @@ class CarrotMan:
       car_selected = car_selected.decode('utf-8')
 
     git_branch = Params().get("GitBranch").decode('utf-8')
-    #try:
-    #  ftp.mkd(git_branch)
-    #except Exception as e:
-    #  print(f"Directory creation failed: {e}")
-    #ftp.cwd(git_branch)
-    #directory = car_selected + " " + Params().get("DongleId").decode('utf-8')
     directory = git_branch + " " + car_selected + " " + Params().get("DongleId").decode('utf-8')
     current_time = datetime.now().strftime("%Y%m%d-%H%M%S")
     filename = tmux_why + "-" + current_time + "-" + git_branch + ".txt"
@@ -891,7 +833,6 @@ class CarrotMan:
     if send_settings:
       self.save_toggle_values()
       try:
-        #with open("/data/backup_params.json", "rb") as file:
         with open("/data/toggle_values.json", "rb") as file:
           ftp.storbinary(f'STOR toggles-{current_time}.json', file)
       except Exception as e:
@@ -900,7 +841,6 @@ class CarrotMan:
     ftp.quit()
 
   def carrot_panda_debug(self):
-    #time.sleep(2)
     while True:
       if self.show_panda_debug:
         self.show_panda_debug = False
@@ -1072,7 +1012,6 @@ class CarrotMan:
           self.carrot_serv.active_carrot = 2
 
         coords = [{"latitude": c.latitude, "longitude": c.longitude} for c in coords]
-        #print("navdNaviPoints=", self.navi_points)
       else:
         print("Received points from navd: 0")
         self.navd_active = False
@@ -1096,7 +1035,6 @@ class CarrotMan:
           conn, addr = s.accept()
           with conn:
             print(f"Connected by {addr}")
-            #self.clear_route()
 
             # 전체 데이터 크기 수신
             total_size_bytes = self.recvall(conn, 4)
@@ -1122,7 +1060,6 @@ class CarrotMan:
               self.navi_points_start_index = 0
               self.navi_points_active = True
               print("Received points:", len(self.navi_points))
-              #print("Received points:", self.navi_points)
 
               self.send_routes(coords)
               """
@@ -1137,9 +1074,6 @@ class CarrotMan:
               except Exception as e:
                 print(f"route_engine error: {e}")
 
-              #msg = messaging.new_message('navRoute', valid=True)
-              #msg.navRoute.coordinates = coords
-              #self.pm.send('navRoute', msg)
               """
 
               if len(coords):
@@ -1163,7 +1097,6 @@ class CarrotMan:
     self.carrot_curve_speed_params()
     if not sm.alive['carState'] and not sm.alive['modelV2']:
         return 250
-    #print(len(sm['modelV2'].orientationRate.z))
     if len(sm['modelV2'].orientationRate.z) == 0:
         return 250
 
@@ -1203,7 +1136,6 @@ class CarrotMan:
     #new
 
     # Get the target velocity for the maximum curve
-    #turnSpeed = max(abs(adjusted_target_lat_a / max_curve)**0.5  * 3.6, self.autoCurveSpeedLowerLimit)
     turnSpeed = max(abs(adjusted_target_lat_a / max_curve)**0.5  * 3.6, 5)
     turnSpeed = min(turnSpeed, 250)
     return turnSpeed * curv_direction
@@ -1212,7 +1144,6 @@ import traceback
 
 def main():
   print("CarrotManager Started")
-  #print("Carrot GitBranch = {}, {}".format(Params().get("GitBranch"), Params().get("GitCommitDate")))
   carrot_man = CarrotMan()
 
   print(f"CarrotMan {carrot_man}")

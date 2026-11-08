@@ -236,7 +236,6 @@ class CarrotServ:
     self.autoTurnMapChange = 0
     self.autoTurnControl = 2
     self.autoTurnControlTurnEnd = 6
-    # self.autoNaviSpeedDecelRate = 0.8
     self.autoCurveSpeedLowerLimit = 30
     self.is_metric = True
     self.autoRoadSpeedLimitOffset = -1
@@ -248,10 +247,8 @@ class CarrotServ:
     self.autoDoForkDecalDistH = 50
     self.autoDoForkDecalDist = 20
     self.autoForkDistOffset = 30
-    #self.autoDoForkCheckDistH = 0
     self.autoDoForkBlinkerDist = 15
     self.autoDoForkNavDist = 15
-    #self.autoDoForkCheckDistH = 0
     self.autoDoForkBlinkerDistH = 30
     self.autoDoForkNavDistH = 50
     self.autoUpRoadLimit = 0
@@ -321,7 +318,6 @@ class CarrotServ:
       self.autoTurnMapChange = self.params.get_int("AutoTurnMapChange")
       self.autoTurnControl = self.params.get_int("AutoTurnControl")
       self.autoTurnControlTurnEnd = self.params.get_int("AutoTurnControlTurnEnd")
-      #self.autoNaviSpeedDecelRate = float(self.params.get_int("AutoNaviSpeedDecelRate")) * 0.01
       self.autoCurveSpeedLowerLimit = int(self.params.get("AutoCurveSpeedLowerLimit"))
       self.is_metric = self.params.get_bool("IsMetric")
       self.autoRoadSpeedLimitOffset = self.params.get_int("AutoRoadSpeedLimitOffset")
@@ -331,13 +327,11 @@ class CarrotServ:
       self.sameSpiCamFilter = self.params.get_int("SameSpiCamFilter")
       self.autoTurnDistOffset = self.params.get_int("AutoTurnDistOffset")
       self.autoForkDistOffset = self.params.get_int("AutoForkDistOffset")
-      #self.autoDoForkCheckDist = self.params.get_int("AutoDoForkCheckDist")
       self.autoDoForkBlinkerDist = self.params.get_int("AutoDoForkBlinkerDist")
       self.autoDoForkNavDist = self.params.get_int("AutoDoForkNavDist")
       self.autoForkDistOffsetH = self.params.get_int("AutoForkDistOffsetH")
       self.autoDoForkDecalDistH = self.params.get_int("AutoDoForkDecalDistH")
       self.autoDoForkDecalDist = self.params.get_int("AutoDoForkDecalDist")
-      #self.autoDoForkCheckDistH = self.params.get_int("AutoDoForkCheckDistH")
       self.autoDoForkBlinkerDistH = self.params.get_int("AutoDoForkBlinkerDistH")
       self.autoDoForkNavDistH = self.params.get_int("AutoDoForkNavDistH")
       self.autoUpRoadLimit = self.params.get_int("AutoUpRoadLimit")
@@ -431,28 +425,18 @@ class CarrotServ:
           elif color in ["Red Light", "Yellow Light"]:
             traffic_red += cnf
 
-    #print(self.traffic_light_q)
     if traffic_red_trig > 0:
       self.traffic_state = 1
-      #self._add_log("Red light triggered")
-      #print("Red light triggered")
     elif traffic_green_trig > 0 and traffic_green > traffic_red:  #주변에 red light의 cnf보다 더 크면 출발... 감지오류로 출발하는경우가 생김.
       self.traffic_state = 2
-      #self._add_log("Green light triggered")
-      #print("Green light triggered")
     elif traffic_left_trig > 0:
       self.traffic_state = 3
     elif traffic_red > 0:
       self.traffic_state = 1
-      #self._add_log("Red light continued")
-      #print("Red light continued")
     elif traffic_green > 0:
       self.traffic_state = 2
-      #self._add_log("Green light continued")
-      #print("Green light continued")
     else:
       self.traffic_state = 0
-      #print("TrafficLight none")
 
     self.traffic_light_q.append((x,y,color,cnf))
 
@@ -604,11 +588,6 @@ class CarrotServ:
       elif self.nSdiType == 7 and self.autoNaviSpeedCtrlMode < 3: #7移动测速, autoNaviSpeedCtrlMode<3表示未设置移动测速限速
         self.xSpdLimit = self.xSpdDist = 0
       #new 人为把测速摄像头的距离减去100m
-      #else:
-      #  if self.nSdiDist > 100:
-      #    self.xSpdDist = self.nSdiDist - 100
-      #  else:
-      #    self.xSpdDist = 0
       #new
     elif (self.nSdiPlusType == 22 or self.nSdiType == 22) and self.roadcate > 1 and self.autoNaviSpeedCtrlMode >= 2: # 22-speed bump, roadcate:0,1: highway
       self.xSpdLimit = self.autoNaviSpeedBumpSpeed
@@ -622,7 +601,6 @@ class CarrotServ:
   def _update_gps(self, v_ego, sm):
     llk = 'liveLocationKalman'
     location = sm[llk]
-    #print(f"location = {sm.valid[llk]}, {sm.updated[llk]}, {sm.recv_frame[llk]}, {sm.recv_time[llk]}")
     if not sm.updated['carState'] or not sm.updated['carControl']: # or not sm.updated[llk]:
       return self.nPosAngle
     CS = sm['carState']
@@ -644,13 +622,11 @@ class CarrotServ:
         bearing = self.nPosAnglePhone
         self.bearing_offset = 0.0
 
-    #print(f"bearing = {bearing:.1f}, posA=={self.nPosAngle:.1f}, posP=={self.nPosAnglePhone:.1f}, offset={self.bearing_offset:.1f}, {gps_updated_phone}, {gps_updated_navi}")
     gpsDelayTimeAdjust = 0.0
     if gps_updated_navi:
       gpsDelayTimeAdjust = 1.0
 
     external_gps_update_timedout = not (gps_updated_phone or gps_updated_navi)
-    #print(f"gps_valid = {self.gps_valid}, bearing = {bearing:.1f}, pos = {location.positionGeodetic.value[0]:.6f}, {location.positionGeodetic.value[1]:.6f}")
     if self.gps_valid and external_gps_update_timedout:    # 내부GPS가 자동하고 carrotman으로부터 gps신호가 없는경우
       self.vpPosPointLatNavi = location.positionGeodetic.value[0]
       self.vpPosPointLonNavi = location.positionGeodetic.value[1]
@@ -671,7 +647,6 @@ class CarrotServ:
     bearing_calculated = (bearing + self.bearing_offset) % 360
 
     dt = now - self.last_calculate_gps_time
-    #print(f"dt = {dt:.1f}, {self.vpPosPointLatNavi}, {self.vpPosPointLonNavi}")
     if dt > 5.0:
       self.vpPosPointLat, self.vpPosPointLon = 0.0, 0.0
     elif dt == 0:
@@ -679,8 +654,6 @@ class CarrotServ:
     else:
       self.vpPosPointLat, self.vpPosPointLon = self.estimate_position(float(self.vpPosPointLatNavi), float(self.vpPosPointLonNavi), v_ego, bearing_calculated, dt + gpsDelayTimeAdjust)
 
-    #self.debugText = " {} {:.1f},{:.1f}={:.1f}+{:.1f}".format(self.active_sdi_count, self.nPosAngle, bearing_calculated, bearing, self.bearing_offset)
-    #print("nPosAngle = {:.1f},{:.1f} = {:.1f}+{:.1f}".format(self.nPosAngle, bearing_calculated, bearing, self.bearing_offset))
 
     return float(bearing_calculated)
 
@@ -902,8 +875,6 @@ class CarrotServ:
     '''
 
     if self.autoTurnMapChange > 0 and check_steer:
-      #print(f"x_dist_to_turn: {x_dist_to_turn}, atc_start_dist: {atc_start_dist}")
-      #print(f"atc_activate_count: {self.atc_activate_count}")
       if self.atc_activate_count == 2:
         self.carrotCmdIndex += 100
         self.carrotCmd = "DISPLAY"
@@ -1054,8 +1025,6 @@ class CarrotServ:
             self.atc_speed_delta = 0
             self.bsd_v_ego_kph = v_ego_kph #保存原始速度
           # 限制每次循环增量(要求2秒内加减速到位)
-          #max_delta = ACCEL_LIMIT * DT_NAV
-          #delta_v_applied = np.clip(delta_v, -max_delta, max_delta)
           delta_v_applied = delta_v*DT_NAV/2
           print(f"delta_v step {delta_v_applied:.1f} km/h, org v_ego_kph {self.bsd_v_ego_kph:.1f} km/h")
           # 限制最大的加减速的量 和 最终请求速度
@@ -1161,8 +1130,6 @@ class CarrotServ:
           break
 
       self.debugText = f"{self.nRoadLimitSpeed if self.is_metric else self.nRoadLimitSpeed * CV.KPH_TO_MPH:.0f},{msg_nav.maneuverType},{msg_nav.maneuverModifier} "
-      #print(msg_nav)
-      #print(f"navInstruction: {self.xTurnInfo}, {self.xDistToTurn}, {self.szTBTMainText}")
 
   def update_kisa(self, data):
     self.active_kisa_count = 100
@@ -1230,7 +1197,6 @@ class CarrotServ:
 
     road_speed_limit_changed = True if self.nRoadLimitSpeed != self.nRoadLimitSpeed_last else False
     self.nRoadLimitSpeed_last = self.nRoadLimitSpeed
-    #self.bearing = self.nPosAngle #self._update_gps(v_ego, sm)
     self.bearing = self._update_gps(v_ego, sm)
 
     #根据车辆行驶的距离更新导航的所有距离信息
@@ -1299,10 +1265,8 @@ class CarrotServ:
                                                    CS.speedLimit * self.autoNaviSpeedSafetyFactor,
                                                    self.autoNaviSpeedCtrlEnd,
                                                    self.autoNaviSpeedDecelRate))
-      #self.active_carrot = 6
       hda_active = True
 
-    #print(f"sdi_speed: {sdi_speed}, hda_active: {hda_active}, xSpdType: {self.xSpdType}, xSpdDist: {self.xSpdDist}, active_carrot: {self.active_carrot}, v_ego_kph: {v_ego_kph}, nRoadLimitSpeed: {self.nRoadLimitSpeed}")
 
     # ===== 移植自 cpv9-corolla ①：绿灯时立刻清摄像头限速，避免绿灯拖刹 =====
     if self.traffic_state == 2 and self.xSpdType in [100, 101]:
@@ -1329,18 +1293,7 @@ class CarrotServ:
 
     if self.nSdiType  >= 0: # or self.active_carrot > 0:
       pass
-      # self.debugText = (
-      #   f"Atc:{atc_desired:.1f}," +
-      #   f"{self.xTurnInfo}:{self.xDistToTurn:.1f}, " +
-      #   f"I({self.nTBTNextRoadWidth},{self.roadcate}) " +
-      #   f"Atc2:{atc_desired_next:.1f}," +
-      #   f"{self.xTurnInfoNext},{self.xDistToTurnNext:.1f}"
-      # )
-      #self.debugText = "" #f" {self.nSdiType}/{self.nSdiSpeedLimit}/{self.nSdiDist},BLOCK:{self.nSdiBlockType}/{self.nSdiBlockSpeed}/{self.nSdiBlockDist}, PLUS:{self.nSdiPlusType}/{self.nSdiPlusSpeedLimit}/{self.nSdiPlusDist}"
-    #elif self.nGoPosDist > 0 and self.active_carrot > 1:
-    #  self.debugText = " 목적지:{:.1f}km/{:.1f}분 남음".format(self.nGoPosDist/1000., self.nGoPosTime / 60)
     else:
-      #self.debugText = ""
       pass
 
     if self.autoTurnControl not in [2, 3] and atc_speed_up != 2:    # auto turn speed control
@@ -1390,7 +1343,6 @@ class CarrotServ:
           speed_n_sources.append((route_speed, "route"))
       elif self.turnSpeedControlMode == 3:
         speed_n_sources.append((route_speed, "route"))
-        #speed_n_sources.append((self.calculate_current_speed(dist, speed * self.mapTurnSpeedFactor, 0, 1.2), "route"))
 
     desired_speed, source = min(speed_n_sources, key=lambda x: x[0])
 
@@ -1593,7 +1545,6 @@ class CarrotServ:
 
     diff = datetime.datetime.utcnow() - new_time
     if abs(diff) < datetime.timedelta(seconds=10) and not no_timezone:
-      #print(f"Time diff too small: {diff}")
       return
 
     print(f"Setting time to {new_time}, diff={diff}")
@@ -1614,7 +1565,6 @@ class CarrotServ:
 
     try:
       subprocess.run(f"TZ=UTC date -s '{new_time}'", shell=True, check=True)
-      #subprocess.run()
     except subprocess.CalledProcessError:
       print("timed.failed_setting_time")
 
@@ -1624,7 +1574,6 @@ class CarrotServ:
     if "carrotIndex" in json:
       self.carrotIndex = int(json.get("carrotIndex"))
 
-    #print(json)
     if self.carrotIndex % 60 == 0 and "epochTime" in json:
       # op는 ntp를 사용하기때문에... 필요없는 루틴으로 보임.
       timezone_remote = json.get("timezone", "Asia/Seoul")
@@ -1632,14 +1581,11 @@ class CarrotServ:
       if not PC:
         self.set_time(int(json.get("epochTime")), timezone_remote)
 
-      #self._update_system_time(int(json.get("epochTime")), timezone_remote)
 
     if "carrotCmd" in json:
-      #print(json.get("carrotCmd"), json.get("carrotArg"))
       self.carrotCmdIndex = self.carrotIndex
       self.carrotCmd = json.get("carrotCmd")
       self.carrotArg = json.get("carrotArg")
-      #print(f"carrotCmd = {self.carrotCmd}, {self.carrotArg}")
 
     self.active_count = 80
     now = time.monotonic()
@@ -1650,7 +1596,6 @@ class CarrotServ:
       self.szGoalName = json.get("szGoalName", self.szGoalName)
 
     if "nRoadLimitSpeed" in json:
-      #print(json)
       self.active_sdi_count = self.active_sdi_count_max
       ### roadLimitSpeed
       nRoadLimitSpeed = int(json.get("nRoadLimitSpeed", 20))
@@ -1677,12 +1622,6 @@ class CarrotServ:
       else:
         nRoadLimitSpeed = 30
       self.nRoadLimitSpeed = nRoadLimitSpeed
-      #if self.nRoadLimitSpeed != nRoadLimitSpeed:
-      #  self.nRoadLimitSpeed_counter += 1
-      #  if self.nRoadLimitSpeed_counter > 5:
-      #    self.nRoadLimitSpeed = nRoadLimitSpeed
-      #else:
-      #  self.nRoadLimitSpeed_counter = 0
 
       ### SDI
       self.nSdiType = int(json.get("nSdiType", -1))
@@ -1737,9 +1676,7 @@ class CarrotServ:
           f"xtbt=xT {self.xTurnInfo},xD {self.xDistToTurn:.1f}, " +
           f"next=T {self.nTBTTurnTypeNext},D {self.nTBTDistNext}"
         )
-      #print(json)
     else:
-      #print(json)
       pass
 
     # 3초간 navi 데이터가 없으면, phone gps로 업데이트
@@ -1749,7 +1686,6 @@ class CarrotServ:
         self.vpPosPointLatNavi = float(json.get("latitude", self.vpPosPointLatNavi))
         self.vpPosPointLonNavi = float(json.get("longitude", self.vpPosPointLonNavi))
         self.nPosAngle = self.nPosAnglePhone
-        # self.nPosSpeed = self.ve # TODO speed from v_ego
         self.last_update_gps_time_phone = self.last_calculate_gps_time = now
         self.gps_accuracy_phone = float(json.get("accuracy", 0))
         self.nPosSpeed = float(json.get("gps_speed", 0))

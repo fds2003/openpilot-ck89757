@@ -9,7 +9,6 @@ import queue
 import collections
 import cereal.messaging as messaging
 from openpilot.common.realtime import Ratekeeper
-#from openpilot.common.params import Params
 from openpilot.system.hardware import PC
 from openpilot.selfdrive.carrot.config import UnifiedParams
 from openpilot.selfdrive.carrot.udp_trust import evaluate as udp_trust_evaluate, parse_allowed
@@ -194,7 +193,7 @@ class AmapNaviServ:
     self.params = UnifiedParams()
     # Q-7: UDP 解析路径 malformed 包计数（JSONDecodeError/UnicodeDecodeError 累加）
     self._malformed_count = 0
-    #self.sm = messaging.SubMaster(['carState', 'modelV2', 'selfdriveState', 'radarState', 'carrotMan'])
+    # TODO(19号Q-9): carState 订阅已被上游 carrot_man 的 update_navi_carstate(self.sm) 取代（carrot_man 自身订阅 carState 并经共享 SharedData 传递），此处不再需要；重新启用需在本 SubMaster 列表加回 carState 并恢复 update_navi_carstate 调用
     self.sm = messaging.SubMaster(['modelV2', 'selfdriveState', 'radarState', 'carrotMan'])
     self.pm = messaging.PubMaster(['amapNavi'])
 
@@ -283,7 +282,7 @@ class AmapNaviServ:
     self.app_port = 4212
 
     threading.Thread(target=self.navi_broadcast_info).start()
-    #threading.Thread(target=self.navi_comm_thread).start()
+    # TODO(19号Q-9): 旧 navi_comm_thread 已由 start_navi_comm() 拆出的多线程（_udp_recv_thread/_data_deal_thread/_lane_recv_thread 等）取代；重新启用需重新实现 navi_comm_thread
     self.start_navi_comm()
 
   def public_amap_navi(self):
@@ -391,10 +390,7 @@ class AmapNaviServ:
     if self.left_solid_detected:
       if self.left_solid_detected_count <= self.min_object_detected_count_thr:
         self.left_solid_detected = False
-        #print("left_solid_detected False")
     elif self.left_solid_detected_count > 0:
-      #if not self.left_solid_detected:
-        #print("left_solid_detected True")
       self.left_solid_detected = True
 
     self.shared_data.left_lane_blind = self.left_solid_detected
@@ -410,10 +406,7 @@ class AmapNaviServ:
     if self.right_solid_detected:
       if self.right_solid_detected_count <= self.min_object_detected_count_thr:
         self.right_solid_detected = False
-        #print("right_solid_detected False")
     elif self.right_solid_detected_count > 0:
-      #if not self.right_solid_detected:
-        #print("right_solid_detected True")
       self.right_solid_detected = True
 
     self.shared_data.right_lane_blind = self.right_solid_detected
@@ -434,8 +427,6 @@ class AmapNaviServ:
     #限制计算动态盲区宽度的车道宽度不小于1.2米
     laneWidthLeft = max(1.2, min(3.5, round(meta.laneWidthLeft, 1)))
     laneWidthRight = max(1.2, min(3.5, round(meta.laneWidthRight, 1)))
-    #distanceToRoadEdgeLeft = round(meta.distanceToRoadEdgeLeft, 1)
-    #distanceToRoadEdgeRight = round(meta.distanceToRoadEdgeRight, 1)
 
     atc_blinker_state = BLINKER_NONE
     turn_left_right = False
@@ -511,10 +502,7 @@ class AmapNaviServ:
     if self.lf_side_object_detected:
       if self.lf_object_detected_count <= self.min_object_detected_count_thr:
         self.lf_side_object_detected = False
-        #print("lf_side_object_detected False")
     elif self.lf_object_detected_count > 0:
-      #if not self.lf_side_object_detected:
-        #print("lf_side_object_detected True")
       self.lf_side_object_detected = True
 
     #左后方
@@ -528,10 +516,7 @@ class AmapNaviServ:
     if self.lb_side_object_detected:
       if self.lb_object_detected_count <= self.min_object_detected_count_thr:
         self.lb_side_object_detected = False
-        #print("lb_side_object_detected False")
     elif self.lb_object_detected_count > 0:
-      #if not self.lb_side_object_detected:
-        #print("lb_side_object_detected True")
       self.lb_side_object_detected = True
 
     #右前方
@@ -545,10 +530,7 @@ class AmapNaviServ:
     if self.rf_side_object_detected:
       if self.rf_object_detected_count <= self.min_object_detected_count_thr:
         self.rf_side_object_detected = False
-        #print("rf_side_object_detected False")
     elif self.rf_object_detected_count > 0:
-      #if not self.rf_side_object_detected:
-        #print("rf_side_object_detected True")
       self.rf_side_object_detected = True
 
     #右后方
@@ -562,10 +544,7 @@ class AmapNaviServ:
     if self.rb_side_object_detected:
       if self.rb_object_detected_count <= self.min_object_detected_count_thr:
         self.rb_side_object_detected = False
-        #print("rb_side_object_detected False")
     elif self.rb_object_detected_count > 0:
-      #if not self.rb_side_object_detected:
-        #print("rb_side_object_detected True")
       self.rb_side_object_detected = True
 
   def update_navi_carstate(self, sm):
@@ -942,13 +921,11 @@ class AmapNaviServ:
               resp_msg = self.make_broadcast_message(self.lane_port, "lane")
               resp_dat = resp_msg.encode('utf-8')
               sock.sendto(resp_dat, addr)
-              #print(resp_dat)
             else:
               #响应
               resp_msg = self.make_broadcast_message(self.lane_port, "lane")
               resp_dat = resp_msg.encode('utf-8')
               sock.sendto(resp_dat, addr)
-              #print(resp_dat)
             if "device" in json_obj:
               device = json_obj.get("device")
               if device == "app":
@@ -1103,10 +1080,6 @@ class AmapNaviServ:
       self.blinker_alive = True
       self.blinker_time = now
 
-    #now = time.time()
-    #last_seen = old_info.get("last_seen", None)
-    #if last_seen is not None and (now - last_seen) > 0.15:
-    #  print(f"=========blinker time > {now - last_seen}")
 
   # ----------------------
   # 更新客户端命令
@@ -1197,8 +1170,6 @@ class AmapNaviServ:
         if resp == "overtake":
           # 通讯时间检查
           last_seen = old_info.get("last_seen", None)
-          #if last_seen is not None and (now - last_seen) > 0.5:
-          #  print(f"********overtake interval > {now - last_seen}")
 
         # 摄像头盲区信号
         if resp == "cam_blind":
@@ -1331,19 +1302,11 @@ class AmapNaviServ:
                 #动态时距盲区判断
                 self.rb_object_detected = self.is_side_object_risky(rb_dreltmp, self.shared_data.rb_vrel, self.shared_data.v_ego_m,
                                                                     self.min_behind_vrel_vego_time, self.min_behind_drel_vego_time)
-              #self.rb_object_detected = self.is_side_object_risky_debug(rb_drel, self.shared_data.rb_vrel,
-              #                                                          self.shared_data.v_ego_m,
-              #                                                          self.min_front_vrel_vego_time,
-              #                                                          self.min_front_drel_vego_time, "RB")
 
           # 通讯时间检查
           now = time.time()
           last_dis_timems = old_info.get("dis_timems", None)
-          #if last_dis_timems is not None and dist_timems is not None and (dist_timems - last_dis_timems) > 80:
-          #  print(f"$$$$$$$${'left' if detect_side == 1 else 'right'} lidar{lidar_id} interval > {dist_timems - last_dis_timems}ms")
           last_seen = old_info.get("last_seen", None)
-          #if last_seen is not None and (now - last_seen) > 0.3:
-          #  print(f"========={'left' if detect_side == 1 else 'right'} lidar{lidar_id} interval > {now - last_seen}")
     except Exception as e:
       print(f"Process json 'resp' error: {e}")
       print(json_obj)
@@ -1707,7 +1670,6 @@ class AmapNaviServ:
 
     while True:
       try:
-        #self.sm.update(0)
         # 修改: 获取当前活跃客户端
         with self._lock:
           self.clients_copy = getattr(self, "clients", {}).copy()
@@ -1738,7 +1700,6 @@ class AmapNaviServ:
                       port = int(port_val)
                     else:
                       port = self.broadcast_port
-                    # port = self.broadcast_port
                     device_type = info.get("device", None)
                     detect_side = info.get("detect_side", None)
 
@@ -1794,14 +1755,12 @@ class AmapNaviServ:
           except Exception as e:
             if (self.shared_data.showDebugLog & 32) > 0:
               print(f"##### navi_broadcast_error...: {e}")
-            # traceback.print_exc()
 
         rk.keep_time()
         frame += 1
       except Exception as e:
         if (self.shared_data.showDebugLog & 32) > 0:
           print(f"navi_broadcast_info error...: {e}")
-        # traceback.print_exc()
         time.sleep(1)
 
   def _shared_snapshot(self):
@@ -1992,8 +1951,6 @@ class AmapNaviServ:
       if self.sm.alive['carrotMan']:
         carrotMan = self.sm['carrotMan']
         msg["desire_speed"] = int(carrotMan.desiredSpeed)  # 期望速度
-        #msg['atc_type'] = carrotMan.atcType
-        #msg['road_name'] = carrotMan.szPosRoadName
         atc_type = carrotMan.atcType
         road_name = carrotMan.szPosRoadName
         x_spd_type = carrotMan.xSpdType
@@ -2073,8 +2030,6 @@ class AmapNaviServ:
             # 找到最大方向变化率（表示最大曲率点）
             max_index = max(range(len(orientation_rate_z)), key=lambda i: abs(orientation_rate_z[i]))
             max_orientation_rate = orientation_rate_z[max_index]
-            #curvature_value = float(max_orientation_rate)
-            #curvature_direction = 1 if max_orientation_rate > 0 else -1
             msg['max_curve'] = round1(max_orientation_rate)
 
         # 如果字段存在才赋值
@@ -2129,8 +2084,6 @@ class AmapNaviServ:
       msg['active'] = sd("cruise_valid")
     # 是否在巡航
     cruise_enable = False
-    #if self.shared_data.cruise_enable is not None and self.shared_data.cruise_enable:
-    #  cruise_enable = True
     if sd("selfdrive_active") is not None and sd("selfdrive_active"):
       cruise_enable = True
     # 在巡航，active强制为True
@@ -2250,7 +2203,6 @@ class AmapNaviServ:
 
 def main():
   amap_navi = AmapNaviServ()
-  #amap_navi.navi_comm_thread()
 
 if __name__ == "__main__":
   main()
