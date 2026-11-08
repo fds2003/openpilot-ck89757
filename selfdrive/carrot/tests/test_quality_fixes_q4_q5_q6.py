@@ -14,6 +14,7 @@ import importlib.util
 import os
 import socket
 import sys
+import threading
 import types
 import unittest
 
@@ -216,6 +217,8 @@ def _mk_serv(shared_data):
   serv.sec_count_down = -1
   serv.left_blindspot = lambda: False
   serv.right_blindspot = lambda: False
+  # Q-1: make_navi_message 读路径需 self._lock（锁内快照）
+  serv._lock = threading.Lock()
   return serv
 
 

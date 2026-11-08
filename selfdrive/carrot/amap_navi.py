@@ -1804,40 +1804,79 @@ class AmapNaviServ:
         # traceback.print_exc()
         time.sleep(1)
 
+  def _shared_snapshot(self):
+    """Q-1: 读路径锁内一次性快照。
+
+    20Hz 写线程（_data_deal_thread）与 10Hz 读线程（make_*_message）共享
+    self.shared_data 裸可变字段。裸读多字段时可能读到"半更新"帧。
+    本方法在 self._lock 内把读路径实际读取的字段复制到局部 dict
+    （dict 型字段浅拷贝，避免与写线程共享引用），调用方在锁外基于
+    快照构建消息。快照只覆盖 3 个 make_*_message / _apply_cruise_state
+    读取的字段，临界区保持极短，不拖慢写线程。
+    """
+    with self._lock:
+      sd = self.shared_data
+      s = {
+        "carState": sd.carState,
+        "vEgo": sd.vEgo, "aEgo": sd.aEgo, "steer_angle": sd.steer_angle,
+        "driver_steering": sd.driver_steering,
+        "gas_press": sd.gas_press, "break_press": sd.break_press,
+        "engaged": sd.engaged,
+        "left_blindspot": sd.left_blindspot, "right_blindspot": sd.right_blindspot,
+        "behind_ttc": sd.behind_ttc,
+        "lidar_lbblind": sd.lidar_lbblind, "lidar_rbblind": sd.lidar_rbblind,
+        "lf_vrel": sd.lf_vrel, "rf_vrel": sd.rf_vrel,
+        "lb_vrel": sd.lb_vrel, "rb_vrel": sd.rb_vrel,
+        "leftFrontBlind": sd.leftFrontBlind, "rightFrontBlind": sd.rightFrontBlind,
+        "lf_drel": dict(sd.lf_drel), "rf_drel": dict(sd.rf_drel),
+        "lf_xrel": dict(sd.lf_xrel), "lb_xrel": dict(sd.lb_xrel),
+        "rf_xrel": dict(sd.rf_xrel), "rb_xrel": dict(sd.rb_xrel),
+        "main_lb_drel": sd.main_lb_drel, "main_rb_drel": sd.main_rb_drel,
+        "lidar_l": sd.lidar_l, "lidar_r": sd.lidar_r,
+        "camera_l": sd.camera_l, "camera_r": sd.camera_r,
+        "roadcate": sd.roadcate, "lat_a": sd.lat_a, "max_curve": sd.max_curve,
+        "op_blocked": sd.op_blocked, "road_blocked": sd.road_blocked,
+        "v_cruise_kph": sd.v_cruise_kph, "v_ego_kph": sd.v_ego_kph,
+        "cruise_valid": sd.cruise_valid, "selfdrive_active": sd.selfdrive_active,
+        "blinker_ctrl": sd.blinker_ctrl,
+      }
+      return s
+
   def make_navi_message(self):
-    msg, isOnroad = self._build_base_fields()
+    snap = self._shared_snapshot()
+    msg, isOnroad, _ = self._build_base_fields(snap)
 
     if isOnroad:
       #车辆状态（navi 版多带 vEgo/aEgo/steer/driver_steering/盲区，保留在此处）
-      if self.shared_data.carState:
-        if self.shared_data.vEgo is not None:
-          msg["vego"] = self.shared_data.vEgo
-        if self.shared_data.aEgo is not None:
-          msg["aego"] = self.shared_data.aEgo
-        if self.shared_data.steer_angle is not None:
-          msg["steer_angle"] = self.shared_data.steer_angle
+      if snap["carState"]:
+        if snap["vEgo"] is not None:
+          msg["vego"] = snap["vEgo"]
+        if snap["aEgo"] is not None:
+          msg["aego"] = snap["aEgo"]
+        if snap["steer_angle"] is not None:
+          msg["steer_angle"] = snap["steer_angle"]
         # BUG-1：下发 driver_steering，车机接管检测依赖此字段（否则恒 false）
-        msg["driver_steering"] = self.shared_data.driver_steering
-        if self.shared_data.gas_press is not None:
-          msg["gas_press"] = self.shared_data.gas_press
-        if self.shared_data.break_press is not None:
-          msg["brake_press"] = self.shared_data.break_press  # 对齐车机 CarrotTelemetryParser 的 brake_press
-        if self.shared_data.engaged is not None:
-          msg["engaged"] = self.shared_data.engaged
+        msg["driver_steering"] = snap["driver_steering"]
+        if snap["gas_press"] is not None:
+          msg["gas_press"] = snap["gas_press"]
+        if snap["break_press"] is not None:
+          msg["brake_press"] = snap["break_press"]  # 对齐车机 CarrotTelemetryParser 的 brake_press
+        if snap["engaged"] is not None:
+          msg["engaged"] = snap["engaged"]
         # 盲区检测
         if not self.disableBlindSpot:
-          if self.shared_data.left_blindspot is not None:
-            msg["left_blindspot"] = self.shared_data.left_blindspot
-          if self.shared_data.right_blindspot is not None:
-            msg["right_blindspot"] = self.shared_data.right_blindspot
+          if snap["left_blindspot"] is not None:
+            msg["left_blindspot"] = snap["left_blindspot"]
+          if snap["right_blindspot"] is not None:
+            msg["right_blindspot"] = snap["right_blindspot"]
         else:
           msg["left_blindspot"] = False
           msg["right_blindspot"] = False
 
       # 与车机 CarrotTelemetryParser 对齐：后向 TTC 与后向盲区
-      msg['lidar_behind_vdist_time'] = float(self.shared_data.behind_ttc)  # 0.0 = 无效/缺失哨兵
-      msg['lidar_lbblind'] = bool(self.shared_data.lidar_lbblind)
-      msg['lidar_rbblind'] = bool(self.shared_data.lidar_rbblind)
+      msg['lidar_behind_vdist_time'] = float(snap["behind_ttc"])  # 0.0 = 无效/缺失哨兵
+      msg['lidar_lbblind'] = bool(snap["lidar_lbblind"])
+      msg['lidar_rbblind'] = bool(snap["lidar_rbblind"])
 
       # 雷达数据
       if self.sm.alive['radarState']:# and self.sm.updated['radarState']:
@@ -1885,21 +1924,21 @@ class AmapNaviServ:
           msg["r_lead"] = False
 
       #前方激光雷达速度
-      if self.shared_data.lf_vrel is not None:
-        msg["lf_vrel"] = int(self.shared_data.lf_vrel * 3.6)
-      if self.shared_data.rf_vrel is not None:
-        msg["rf_vrel"] = int(self.shared_data.rf_vrel * 3.6)
+      if snap["lf_vrel"] is not None:
+        msg["lf_vrel"] = int(snap["lf_vrel"] * 3.6)
+      if snap["rf_vrel"] is not None:
+        msg["rf_vrel"] = int(snap["rf_vrel"] * 3.6)
       #后方激光雷达速度
-      if self.shared_data.lb_vrel is not None:
-        msg["lb_vrel"] = int(self.shared_data.lb_vrel * 3.6)
-      if self.shared_data.rb_vrel is not None:
-        msg["rb_vrel"] = int(self.shared_data.rb_vrel * 3.6)
+      if snap["lb_vrel"] is not None:
+        msg["lb_vrel"] = int(snap["lb_vrel"] * 3.6)
+      if snap["rb_vrel"] is not None:
+        msg["rb_vrel"] = int(snap["rb_vrel"] * 3.6)
 
       #前雷达盲区信号
-      if self.shared_data.leftFrontBlind is not None:
-        msg['l_front_blind'] = self.shared_data.leftFrontBlind
-      if self.shared_data.rightFrontBlind is not None:
-        msg['r_front_blind'] = self.shared_data.rightFrontBlind
+      if snap["leftFrontBlind"] is not None:
+        msg['l_front_blind'] = snap["leftFrontBlind"]
+      if snap["rightFrontBlind"] is not None:
+        msg['r_front_blind'] = snap["rightFrontBlind"]
 
       #雷达和摄像头盲区
       msg['lidar_lblind'] = self.left_blindspot()
@@ -1910,14 +1949,15 @@ class AmapNaviServ:
       # 不参与 fields 循环（否则 idx==0 时写入的原始值要么被无条件覆盖、
       # 要么被 pop，是隐性死代码）。
       fields = ["lf_drel", "rf_drel", "lf_xrel", "lb_xrel", "rf_xrel", "rb_xrel"]
+      # Q-1: 读快照内的 dict 副本（不再直接读 self.shared_data 的 dict）
       # 找出所有 field 的所有 lidar_id
       all_lidar_ids = set()
       for f in fields:
-        all_lidar_ids.update(getattr(self.shared_data, f).keys())
+        all_lidar_ids.update(snap[f].keys())
       # 按索引顺序遍历
       for idx in sorted(all_lidar_ids):
         for field in fields:
-          d = getattr(self.shared_data, field)
+          d = snap[field]
           if idx in d and d[idx] is not None:
             key = field if idx == 0 else f"{field}{idx}"
             msg[key] = d[idx]
@@ -1928,25 +1968,25 @@ class AmapNaviServ:
       # main_*_drel 单位为 mm、后向距离常以负值表示，取绝对值后换算为米。
       for side in ("lb", "rb"):
         key = f"{side}_drel"
-        main = getattr(self.shared_data, f"main_{side}_drel", None)
+        main = snap[f"main_{side}_drel"]
         if main is not None:
           msg[key] = round(abs(main) / 1000.0, 1)
         else:
           msg.pop(key, None)
 
       #雷达或摄像头是否存在标志
-      msg['lidar_l'] = self.shared_data.lidar_l
-      msg['lidar_r'] = self.shared_data.lidar_r
-      msg['camera_l'] = self.shared_data.camera_l
-      msg['camera_r'] = self.shared_data.camera_r
+      msg['lidar_l'] = snap["lidar_l"]
+      msg['lidar_r'] = snap["lidar_r"]
+      msg['camera_l'] = snap["camera_l"]
+      msg['camera_r'] = snap["camera_r"]
 
       #来自共享数据
-      if self.shared_data.roadcate is not None:
-        msg['roadcate'] = self.shared_data.roadcate
-      if self.shared_data.lat_a is not None:
-        msg['lat_a'] = round2(self.shared_data.lat_a)
-      if self.shared_data.max_curve is not None:
-        msg['max_curve'] = round2(self.shared_data.max_curve)
+      if snap["roadcate"] is not None:
+        msg['roadcate'] = snap["roadcate"]
+      if snap["lat_a"] is not None:
+        msg['lat_a'] = round2(snap["lat_a"])
+      if snap["max_curve"] is not None:
+        msg['max_curve'] = round2(snap["max_curve"])
 
       # carrotMan数据
       if self.sm.alive['carrotMan']:
@@ -1974,9 +2014,9 @@ class AmapNaviServ:
         else:
           msg["atc_state"] = 0
 
-      msg['blind_enable'] = (self.shared_data.lidar_l or self.shared_data.camera_l) and (self.shared_data.lidar_r or self.shared_data.camera_r)
-      msg['op_blocked'] = self.shared_data.op_blocked
-      msg['road_blocked'] = self.shared_data.road_blocked
+      msg['blind_enable'] = (snap["lidar_l"] or snap["camera_l"]) and (snap["lidar_r"] or snap["camera_r"])
+      msg['op_blocked'] = snap["op_blocked"]
+      msg['road_blocked'] = snap["road_blocked"]
 
     # 来自模型的消息
     if self.sm.alive['modelV2']:
@@ -2027,7 +2067,7 @@ class AmapNaviServ:
         if hasattr(meta, 'laneWidth'):
           msg['lane_width'] = round(meta.laneWidth, 1)
 
-        if self.shared_data.max_curve is None and hasattr(modelV2, 'orientationRate') and len(modelV2.orientationRate.z) > 0:
+        if snap["max_curve"] is None and hasattr(modelV2, 'orientationRate') and len(modelV2.orientationRate.z) > 0:
           orientation_rate_z = self._capnp_list_to_list(modelV2.orientationRate.z)
           if orientation_rate_z:
             # 找到最大方向变化率（表示最大曲率点）
@@ -2038,20 +2078,22 @@ class AmapNaviServ:
             msg['max_curve'] = round1(max_orientation_rate)
 
         # 如果字段存在才赋值
-        if self.shared_data.leftFrontBlind is None and hasattr(meta, 'leftFrontBlind'):
+        if snap["leftFrontBlind"] is None and hasattr(meta, 'leftFrontBlind'):
           msg['l_front_blind'] = meta.leftFrontBlind
-        if self.shared_data.rightFrontBlind is None and hasattr(meta, 'rightFrontBlind'):
+        if snap["rightFrontBlind"] is None and hasattr(meta, 'rightFrontBlind'):
           msg['r_front_blind'] = meta.rightFrontBlind
 
-    self._apply_cruise_state(msg)
+    self._apply_cruise_state(msg, snap)
 
     return json.dumps(msg)
 
-  def _build_base_fields(self):
+  def _build_base_fields(self, snap=None):
     """Q-2: 三个 make_*_message 公共基础字段（逐字一致部分）。
 
     各函数保留各自差异部分（navi 多 vEgo/aEgo/steer/driver_steering/盲区，
     blinker 多 gas_press/break_press），不在此处合并。
+    Q-1: 接受读快照 snap（可选），使 _apply_cruise_state 走同一快照；
+    snap 为 None 时（make_broadcast_message 等无锁调用方）直接读 shared_data。
     """
     msg = {}
     msg['ip'] = self.local_ip_address
@@ -2060,27 +2102,36 @@ class AmapNaviServ:
     isOnroad = self.params.get_bool("IsOnroad")
     msg['IsOnroad'] = isOnroad
     if isOnroad:
-      if self.shared_data.carState:
-        if self.shared_data.v_cruise_kph is not None:
-          msg['v_cruise_kph'] = self.shared_data.v_cruise_kph  # 巡航速度
-        if self.shared_data.v_ego_kph is not None:
-          msg['v_ego_kph'] = self.shared_data.v_ego_kph  # 当前速度
-    return msg, isOnroad
+      sd = (lambda f: snap[f]) if snap is not None else (lambda f: getattr(self.shared_data, f))
+      if sd("carState"):
+        if sd("v_cruise_kph") is not None:
+          msg['v_cruise_kph'] = sd("v_cruise_kph")  # 巡航速度
+        if sd("v_ego_kph") is not None:
+          msg['v_ego_kph'] = sd("v_ego_kph")  # 当前速度
+    return msg, isOnroad, snap
 
-  def _apply_cruise_state(self, msg):
-    """Q-2: 三处逐字重复的巡航状态推导（selfdriveState/cruise_valid/engaged）。"""
+  def _apply_cruise_state(self, msg, snap=None):
+    """Q-2: 三处逐字重复的巡航状态推导（selfdriveState/cruise_valid/engaged）。
+    Q-1: 读 shared_data 走快照（navi/blinker 传 snap）或直读（make_lidar_message 无 snap）。
+    """
+    sd = (lambda f: snap[f]) if snap is not None else (lambda f: getattr(self.shared_data, f))
     #===============巡航状态处理==============
     if self.sm.alive['selfdriveState']:
       selfdrive = self.sm['selfdriveState']
       self.shared_data.selfdrive_active = True if selfdrive.active else False
+      if snap is not None:
+        # Q-1: 保持读路径快照语义——selfdrive_active 在 _apply_cruise_state 入口
+        # 由 sm 状态推导后回写快照（该字段语义上归 sm 所有，快照入口冻结的
+        # 是上一帧 carState 值，此处取当前帧推导值才等价重构前行为）。
+        snap['selfdrive_active'] = self.shared_data.selfdrive_active
     # 巡航系统是否已激活
-    if self.shared_data.cruise_valid is not None:
-      msg['active'] = self.shared_data.cruise_valid
+    if sd("cruise_valid") is not None:
+      msg['active'] = sd("cruise_valid")
     # 是否在巡航
     cruise_enable = False
     #if self.shared_data.cruise_enable is not None and self.shared_data.cruise_enable:
     #  cruise_enable = True
-    if self.shared_data.selfdrive_active is not None and self.shared_data.selfdrive_active:
+    if sd("selfdrive_active") is not None and sd("selfdrive_active"):
       cruise_enable = True
     # 在巡航，active强制为True
     if cruise_enable:
@@ -2090,7 +2141,7 @@ class AmapNaviServ:
       msg['engaged'] = cruise_enable
 
   def make_lidar_message(self):
-    msg, isOnroad = self._build_base_fields()
+    msg, isOnroad, _ = self._build_base_fields()
 
     if isOnroad:
       self._apply_cruise_state(msg)
@@ -2103,15 +2154,16 @@ class AmapNaviServ:
     return json.dumps(msg)
 
   def make_blinker_message(self):
-    msg, isOnroad = self._build_base_fields()
+    snap = self._shared_snapshot()
+    msg, isOnroad, _ = self._build_base_fields(snap)
 
     if isOnroad:
       # 车辆状态（blinker 版多带 gas_press/break_press，保留在此处）
-      if self.shared_data.carState:
-        if self.shared_data.gas_press is not None:
-          msg["gas_press"] = self.shared_data.gas_press
-        if self.shared_data.break_press is not None:
-          msg["brake_press"] = self.shared_data.break_press  # 对齐车机 CarrotTelemetryParser 的 brake_press
+      if snap["carState"]:
+        if snap["gas_press"] is not None:
+          msg["gas_press"] = snap["gas_press"]
+        if snap["break_press"] is not None:
+          msg["brake_press"] = snap["break_press"]  # 对齐车机 CarrotTelemetryParser 的 brake_press
       # 雷达数据
       if self.sm.alive['radarState']:  # and self.sm.updated['radarState']:
         radar_state = self.sm['radarState']
@@ -2133,20 +2185,20 @@ class AmapNaviServ:
     if self.sm.alive['modelV2']:
       meta = self.sm['modelV2'].meta
       if hasattr(meta, 'blinker'):
-        if self.shared_data.blinker_ctrl == BLINKER_NONE or meta.blinker != "none":
+        if snap["blinker_ctrl"] == BLINKER_NONE or meta.blinker != "none":
           msg['blinker'] = meta.blinker
-        elif self.shared_data.blinker_ctrl == BLINKER_LEFT:
+        elif snap["blinker_ctrl"] == BLINKER_LEFT:
           if self.stockBlinkerCtrl == 0:
             msg['blinker'] = "left"
           else:
             msg['blinker'] = "stockleft"
-        elif self.shared_data.blinker_ctrl == BLINKER_RIGHT:
+        elif snap["blinker_ctrl"] == BLINKER_RIGHT:
           if self.stockBlinkerCtrl == 0:
             msg['blinker'] = "right"
           else:
             msg['blinker'] = "stockright"
 
-    self._apply_cruise_state(msg)
+    self._apply_cruise_state(msg, snap)
 
     return json.dumps(msg)
 

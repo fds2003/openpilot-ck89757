@@ -67,6 +67,12 @@ def main():
     TestQ7ParseExceptionLayering,
     TestQ8NamingAndEncapsulation,
   )
+  # 19号文档 规划档 Q-1（SharedData 读路径锁内快照）
+  from test_quality_fix_q1 import (
+    TestQ1GoldenValues,
+    TestQ1ThreadTearing,
+    TestQ1ReadPathLockSnapshot,
+  )
 
   suite.addTests(loader.loadTestsFromTestCase(TestSecuritySwitches))
   suite.addTests(loader.loadTestsFromTestCase(TestLogRotation))
@@ -123,6 +129,10 @@ def main():
   suite.addTests(loader.loadTestsFromTestCase(TestQ2MessageRefactor))
   suite.addTests(loader.loadTestsFromTestCase(TestQ7ParseExceptionLayering))
   suite.addTests(loader.loadTestsFromTestCase(TestQ8NamingAndEncapsulation))
+  # 19号文档 规划档 Q-1
+  suite.addTests(loader.loadTestsFromTestCase(TestQ1GoldenValues))
+  suite.addTests(loader.loadTestsFromTestCase(TestQ1ThreadTearing))
+  suite.addTests(loader.loadTestsFromTestCase(TestQ1ReadPathLockSnapshot))
   runner = unittest.TextTestRunner(verbosity=2)
   result = runner.run(suite)
 
