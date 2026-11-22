@@ -27,3 +27,8 @@
 
 5. **[车机端开源中继协同工程 (AmapNavi-Reborn)](https://github.com/fds2003/AmapNavi-Reborn)**  
    * 运行于库斯途车机 960x1280 竖屏上的轻量级中继 App。
+
+6. **[后向雷达门禁与原车 BSM 自动变道阻断方案](20_后向雷达门禁与BSM自动变道阻断.md)**  
+   * `RearRadarEnable` 参数：未装后向雷达时消除"盲区有车"每 2 秒误报，默认不允许自动变道；
+   * 原车 LCA11 (0x58B) 后视镜盲区指示灯纳入自动变道门禁（方向相关，DisableBlindSpot 豁免）；
+   * rear_gate.py 纯逻辑门禁 + TDD 测试（18 用例）+ `verify_bsm.py` 实车验证方案与判定矩阵。
