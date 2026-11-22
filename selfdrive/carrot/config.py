@@ -141,6 +141,7 @@ class UnifiedParams:
             "AutoForkSpeedMin": 45,
             "AutoKeepForkSpeed": 5,
             "ShowDebugLog": 0,
+            "CarrotEchoCmdEnable": 0,
             "AutoCurveSpeedFactorH": 100,
             "AutoCurveSpeedAggressivenessH": 100,
             "SameSpiCamFilter": 1,

@@ -513,6 +513,18 @@
                 uiType: "number",
                 category: "公共参数设置"
             },
+            "CarrotEchoCmdEnable": {
+                chineseName: "echo_cmd远程命令开关",
+                defaultValue: 0,
+                description: "0:关闭(默认),1:允许车机经ZMQ 7710调用白名单命令(tmux_capture/params_dump)；行驶中始终锁定(423)",
+                inputRange: [0, 1],
+                uiType: "select",
+                options: [
+                    { value: 0, text: "关闭" },
+                    { value: 1, text: "开启" }
+                ],
+                category: "公共参数设置"
+            },
             "LaneStabTime": {
                 chineseName: "车道数稳定时间(10x0.1s)",
                 defaultValue: 50,

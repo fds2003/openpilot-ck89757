@@ -20,11 +20,12 @@
   - 修复：`is_driver_initiated` 排除 `trigger_name == "cmd"`；ttc=0.0 视为未确认清空 → 中止。
   - 落地：rear_gate.py 新增 `is_driver_initiated_change()` / `evaluate_lane_change_abort()` 纯函数，desire_helper.py 执行段复检改为调用；cmd 变道归入 fail-safe 严格分支。
 
-- [ ] **P0-3 (Spec) echo_cmd UI 开关缺失，功能永久死路**
+- [x] **P0-3 (Spec) echo_cmd UI 开关缺失，功能永久死路**（已修复，TDD GREEN：test_echo_cmd_switch.py 4 用例契约测试）
   - 位置：`common/params_keys.h`、`selfdrive/carrot/nav_params.html`、`carrot_man.py:882-886`
   - 问题：`CarrotEchoCmdEnable` 未注册 → `UnifiedParams.get_bool` 恒 `default=False`；`test_security_switches.py` 用 `MockParams` 测不出。
   - 需求：39ded308 "secure echo_cmd gateway with **UI switch** and 423 lockout"。
   - 修复：注册 key + HTML 开关 + 默认值确认；测试改用真实 Params（或 OpenpilotPrefix 沙箱）。
+  - 落地：params_keys.h 注册 `{"CarrotEchoCmdEnable", PERSISTENT}`（nav_params 页保存路径经 UnifiedParams._save_system_param 依赖此注册）；config.py 默认 0；nav_params.html 新增开关（公共参数设置组）；carrot_settings.json / apilot.json 清单补条目。静态契约测试替代 MockParams（设备 .so 环境限制），写入路径语义经 config.py:74 核实。
 
 - [ ] **P0-4 (Spec) amapNavi stale 时的 legacy BSD fallback 被回退**
   - 位置：`selfdrive/carrot/amap_navi.py:311-315`、`desire_helper.py:956-967`
