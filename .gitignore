@@ -106,3 +106,9 @@ Pipfile
 # Ignore all local history of files
 .history
 .ionide
+
+# Custo local environment overrides
+launch_env.local
+check_tr.py
+commit_msg.txt
+

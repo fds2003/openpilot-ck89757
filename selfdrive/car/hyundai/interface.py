@@ -105,11 +105,14 @@ class CarInterface(CarInterfaceBase):
 
     ret.stoppingControl = True
     ret.vEgoStarting = 0.1
-    if Params().get_bool("LkasToggle"):
-      ret.startAccel = 1.0
+    ret.longitudinalActuatorDelay = 0.5
+
+    # 库斯途 2.0T 旗舰版专车物理动力学与平顺起步
+    if candidate == CAR.HYUNDAI_CUSTIN_1ST_GEN:
+      ret.steerActuatorDelay = 0.15  # 3.055m 超长轴距偏航建立补偿 (150ms 超前前馈)
+      ret.startAccel = 1.0           # 2.0T 8AT 专属: 固化起步加速度，消除 1-2 挡顿挫
     else:
       ret.startAccel = 1.6
-    ret.longitudinalActuatorDelay = 0.5
 
     if ret.flags & (HyundaiFlags.HYBRID | HyundaiFlags.EV):
       ret.startingState = False

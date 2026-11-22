@@ -97,6 +97,15 @@ class Parser:
       self.parse_mdn('desired_curvature', outs, in_N=0, out_N=0, out_shape=(ModelConstants.DESIRED_CURV_WIDTH,))
     for k in ['lead_prob', 'lane_lines_prob', 'meta']:
       self.parse_binary_crossentropy(k, outs)
+
+    # 库斯途 MPV 专车优化: 模型输出置信度硬切除滤波器 (移植并加固自 cp 分支)
+    # 作用: 1. 过滤车道线噪点(<=0.2归零), 杜绝 3055mm 轴距大车方向盘高频微动
+    #       2. 过滤前车伪目标(<=0.35归零), 杜绝高架光影与路牌引起的幽灵刹车
+    if 'lane_lines_prob' in outs and outs['lane_lines_prob'] is not None:
+      outs['lane_lines_prob'] = np.where(outs['lane_lines_prob'] > 0.2, outs['lane_lines_prob'], 0.0)
+    if 'lead_prob' in outs and outs['lead_prob'] is not None:
+      outs['lead_prob'] = np.where(outs['lead_prob'] > 0.35, outs['lead_prob'], 0.0)
+
     self.parse_categorical_crossentropy('desire_state', outs, out_shape=(ModelConstants.DESIRE_PRED_WIDTH,))
     self.parse_categorical_crossentropy('desire_pred', outs, out_shape=(ModelConstants.DESIRE_PRED_LEN,ModelConstants.DESIRE_PRED_WIDTH))
     return outs

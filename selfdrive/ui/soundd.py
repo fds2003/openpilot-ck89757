@@ -68,13 +68,32 @@ class Soundd:
 
     self.param_s = Params()
     self.quiet_drive = self.param_s.get_bool("QuietDrive")
+    self.dm_volume_ratio = 0.35 if self.quiet_drive else 1.0
+    self.custom_dm_ratio = None
 
     self._frame = 0
 
   def load_param(self):
     self._frame += 1
     if self._frame == 50:
+      self._frame = 0
       self.quiet_drive = self.param_s.get_bool("QuietDrive")
+      # 库斯途 MPV 专属: 支持读取自定义 DM 音量百分比 (0~100)
+      vol_str = self.param_s.get("CustoDMVolumeRatio")
+      if vol_str is not None:
+        try:
+          self.custom_dm_ratio = max(0.1, min(1.0, float(vol_str) / 100.0))
+        except ValueError:
+          self.custom_dm_ratio = None
+      else:
+        self.custom_dm_ratio = None
+
+      # 界面 Quiet Drive 深度联动:
+      # 开启 Quiet Drive 时，DM 提示音自动降至 35% 轻柔音量；关闭时为 100% 标准音量
+      if self.custom_dm_ratio is not None:
+        self.dm_volume_ratio = self.custom_dm_ratio
+      else:
+        self.dm_volume_ratio = 0.35 if self.quiet_drive else 1.0
 
   def should_play_sound(self):
     return (self.current_alert == AudibleAlert.warningSoft or self.current_alert == AudibleAlert.warningImmediate or
@@ -116,6 +135,17 @@ class Soundd:
         ret[written_frames:written_frames+frames_to_write] = sound_data[current_sound_frame:current_sound_frame+frames_to_write]
         written_frames += frames_to_write
         self.current_sound_frame += frames_to_write
+
+      # 库斯途 MPV 专属: 差异化分级提示音控制
+      if self.current_alert == AudibleAlert.promptDistracted:
+        alert_ratio = self.dm_volume_ratio
+      elif self.current_alert in (AudibleAlert.warningSoft, AudibleAlert.warningImmediate):
+        # 严重警告与紧急接管: 保持高穿透保底音量 (保底 >= 70%), 严守安全红线
+        alert_ratio = max(0.7, self.dm_volume_ratio)
+      else:
+        alert_ratio = 1.0
+
+      return ret * (self.current_volume * alert_ratio)
 
     return ret * self.current_volume
 

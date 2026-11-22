@@ -1,0 +1,12 @@
+# 库斯途 2.0T 旗舰版 - 本地环境配置文件模板
+# 复制此文件为 launch_env.local 即可生效，该文件已被 .gitignore 忽略，不会污染代码库。
+
+# 自定义 Athena / API 服务器（如需使用官方或自建服务器）
+# export ATHENA_HOST='ws://op.caminfo.cn:7776'
+# export API_HOST='http://op.caminfo.cn:7777'
+
+# 自定义 Mapbox Token
+# export MAPBOX_TOKEN='your_mapbox_token_here'
+
+# 库斯途 DM 提示音微音比例（默认 0.35，范围 0.15 ~ 1.0）
+# export CUSTO_DM_VOLUME_RATIO='0.35'

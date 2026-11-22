@@ -148,6 +148,17 @@ def manager_init() -> None:
   except PermissionError:
     print("WARNING: failed to make /dev/shm")
 
+  # 库斯途专属: 启动前清空残余共享内存与信号量，杜绝热重启死锁 (移植自 cp 分支)
+  try:
+    from openpilot.system.manager.manager_shm_patch import cleanup_shared_memory_on_start
+    cleanup_shared_memory_on_start()
+  except ImportError:
+    try:
+      from system.manager.manager_shm_patch import cleanup_shared_memory_on_start
+      cleanup_shared_memory_on_start()
+    except Exception:
+      pass
+
   # set version params
   params.put("Version", build_metadata.openpilot.version)
   params.put("TermsVersion", terms_version)

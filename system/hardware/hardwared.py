@@ -325,18 +325,17 @@ def hardware_thread(end_event, hw_queue) -> None:
     set_offroad_alert_if_changed("Offroad_TemperatureTooHigh", show_alert, extra_text=extra_text)
 
     # TODO: this should move to TICI.initialize_hardware, but we currently can't import params there
-    if False: #TICI:
+    if TICI:
       if not os.path.isfile("/persist/comma/living-in-the-moment"):
         if not Path("/data/media").is_mount():
           set_offroad_alert_if_changed("Offroad_StorageMissing", True)
         else:
-          # check for bad NVMe
+          # 优雅兼容非三星 NVMe / 改装硬件: 仅记录日志，不弹窗报错阻断
           try:
             with open("/sys/block/nvme0n1/device/model") as f:
               model = f.read().strip()
-            if not model.startswith("Samsung SSD 980") and params.get("Offroad_BadNvme") is None:
-              set_offroad_alert_if_changed("Offroad_BadNvme", True)
-              cloudlog.event("Unsupported NVMe", model=model, error=True)
+            if not model.startswith("Samsung SSD 980"):
+              cloudlog.info(f"Custom/Non-Samsung NVMe running: {model}")
           except Exception:
             pass
 
