@@ -498,7 +498,21 @@ class DesireHelper:
     xDistToTurn = carrotMan.xDistToTurn
     atc_type = carrotMan.atcType #carrotMan.atcType来自carrot_man.py的update_auto_turn函数状态
     atc_blinker_state = BLINKER_NONE
-    if self.carrot_lane_change_count > 0: #carrotCmd为"LANECHANGE"是的0.2秒计数
+    # P0-1: CANCEL 消费必须是最高优先级的独立 if——
+    # OVERTAKE 执行中 carrot_lane_change_count=400 帧(20s)，若 CANCEL 挂在其后的
+    # elif 链上会被吞掉；车机断联自动发送 CANCEL_LANE_CHANGE ×3 且同一 seq，
+    # amap_navi 去重后仅首包有效，重发无法补救（契约：CANCEL 50ms 内立即中止）
+    if carrotMan.carrotCmdIndex != self.carrot_cmd_index_last and carrotMan.carrotCmd == "CANCEL":
+      self.carrot_cmd_index_last = carrotMan.carrotCmdIndex
+      self.carrot_lane_change_count = 0
+      self.carrot_overtake_cmd = False
+      self.carrot_blinker_state = BLINKER_NONE
+      self.lane_change_state = LaneChangeState.off
+      self.lane_change_direction = LaneChangeDirection.none
+      self.trigger_name = "cancel cmd"
+      self.lane_change_audio(True, 4, 0)
+      print(f"---[{time.strftime('%H:%M:%S')}.{self.frame%100}]Received CANCEL command, aborting lane change")
+    elif self.carrot_lane_change_count > 0: #carrotCmd为"LANECHANGE"是的0.2秒计数
       atc_blinker_state = self.carrot_blinker_state
       # 2025.10.19
       below_lane_change_speed = False
@@ -527,16 +541,6 @@ class DesireHelper:
         self.carrot_lane_change_count = int(LANE_CHANGE_TIME_MAX*2.0 / DT_MDL)
       else:
         self.carrot_overtake_cmd = False
-    elif carrotMan.carrotCmdIndex != self.carrot_cmd_index_last and carrotMan.carrotCmd == "CANCEL":
-      self.carrot_cmd_index_last = carrotMan.carrotCmdIndex
-      self.carrot_lane_change_count = 0
-      self.carrot_overtake_cmd = False
-      self.carrot_blinker_state = BLINKER_NONE
-      self.lane_change_state = LaneChangeState.off
-      self.lane_change_direction = LaneChangeDirection.none
-      self.trigger_name = "cancel cmd"
-      self.lane_change_audio(True, 4, 0)
-      print(f"---[{time.strftime('%H:%M:%S')}.{self.frame%100}]Received CANCEL command, aborting lane change")
     elif atc_type in ["turn left", "turn right"]: #来自carrot_man.py的update_auto_turn函数，转弯请求
       if self.atc_active != 2:
         below_lane_change_speed = True

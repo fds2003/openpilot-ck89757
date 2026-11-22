@@ -6,11 +6,12 @@
 
 ## P0 — 安全需求未达成 / lint 红线
 
-- [ ] **P0-1 (Spec) CANCEL 无法在 50ms 内中止变道**
+- [x] **P0-1 (Spec) CANCEL 无法在 50ms 内中止变道**（已修复，TDD GREEN：test_cancel_priority.py 契约测试）
   - 位置：`selfdrive/controls/lib/desire_helper.py:497,526,523,1319-1324`
   - 问题：CANCEL 分支是 `if carrot_lane_change_count > 0` 之后的 `elif`；OVERTAKE 将计数置 400 帧（20s），CANCEL 要等 `laneChangeFinishing` 重置后才被消费。
   - 需求：README「CANCEL 指令 50ms 内立即中止变道」/ COOPERATIVE_PILOT.md:88。
   - 修复：CANCEL 消费提到计数判断之前（独立 if 分支，优先级最高）；补一条端到端时序测试。
+  - 落地：CANCEL 分支提升为链首独立 if（desire_helper.py:501-514）；跨端核对确认车机断联自动 CANCEL ×3 同 seq、C3 去重仅首包有效，重发无法补救——本修复使首包即被消费。
 
 - [x] **P0-2 (Spec) 远程指令变道未走 fail-safe TTC 中止**（已修复，TDD GREEN：test_lane_change_abort_gating.py 13 用例）
   - 位置：`desire_helper.py:1159-1163, 1258`
