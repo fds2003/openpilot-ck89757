@@ -3,6 +3,7 @@ from openpilot.common.conversions import Conversions as CV
 from openpilot.common.realtime import DT_MDL
 import numpy as np
 from openpilot.selfdrive.modeld.constants import ModelConstants
+from openpilot.selfdrive.controls.lib.rear_gate import evaluate_rear_gate, evaluate_bsm_gate
 from openpilot.selfdrive.carrot.config import UnifiedParams
 from collections import deque
 #new
@@ -244,6 +245,7 @@ class DesireHelper:
     self.lane_change_state_prev = LaneChangeState.off
     self.driver_lane_change_delay = 0.0
     self.disableBlindSpot = False
+    self.rear_radar = False  # RearRadarEnable: 1=安装了后向雷达(启用TTC门禁), 0=未安装(跳过门禁与播报)
     self.atc_bsd = BLINKER_NONE
     self.first_bsd_speak = False
     self.atc_resume_cnt = 5
@@ -405,6 +407,7 @@ class DesireHelper:
       self.blinkerMode = self.params.get_int("BlinkerMode")
       self.autoLaneChangeMinSpeed = self.params.get_int("AutoLaneChangeMinSpeed")
       self.disableBlindSpot = self.params.get_bool("DisableBlindSpot")
+      self.rear_radar = self.params.get_bool("RearRadarEnable")
       self.atc_resume_cnt_para = self.params.get_int("AtcResumeCnt")
       self.atc_resume_delay_para = self.params.get_float("AtcResumeDelay")
       #new
@@ -952,18 +955,21 @@ class DesireHelper:
     # M-12/M-14: TTC 刚性门禁对所有变道触发路径生效（车机指令与自主变道），
     # 不再局限于 carrot_lane_change_count 的 0.2 秒计数窗口。
     # 失效（0.0 / 消息缺失）与 TTC 不足一律阻断，与执行期复检共用同一 fail-safe 语义。
-    amap_alive = self.sm.alive['amapNavi']
-    overtake_mode = amapNavi.overtakeMode if amap_alive and amapNavi.overtakeMode in (0, 1, 2) else 1
-    behind_ttc = amapNavi.lidarBehindVdistTime if amap_alive else 0.0
-    ttc_threshold = {0: 1.8, 1: 2.5, 2: 3.5}.get(overtake_mode, 2.5)
-    # P0 裁决：与执行段车机/自动分支统一为 fail-safe 写法。ttc 发布端只产
-    # 0.0 / 正值 / 99.0，去掉冗余的 0.0 < 下限后行为不变，且对异常负值也判阻断。
-    rear_conflict = (behind_ttc <= 0.0) or (behind_ttc < ttc_threshold)
-    if rear_conflict:
+    # RearRadarEnable=0（未装后向雷达）时：默认不允许自动变道（阻断触发路径），
+    # 但不播报"后方来车"，否则 behind_ttc 恒为 0.0 失效哨兵会每 2 秒误报"盲区有车"。
+    # 驾驶员手动打灯变道不受影响。判定逻辑见 rear_gate.evaluate_rear_gate（TDD 覆盖）。
+    block_auto, play_audio = evaluate_rear_gate(
+      self.rear_radar, amapNavi.lidarBehindVdistTime, amapNavi.overtakeMode, self.sm.alive['amapNavi'])
+    if block_auto:
       auto_lane_change_trigger = False
       auto_lane_change_trigger_no_bsd = False
-      if (self.frame % int(2.0 / DT_MDL)) == 0:
+      if play_audio and (self.frame % int(2.0 / DT_MDL)) == 0:
         self.lane_change_audio(True, 6, 0) # 播报后方来车
+
+    # 原车 BSM 门禁：变道方向侧盲区指示灯亮时放弃自动变道（判定逻辑见 rear_gate.evaluate_bsm_gate，
+    # TDD 覆盖）。DisableBlindSpot=1 时不生效；仅阻断自动触发路径，不影响驾驶员手动变道。
+    if evaluate_bsm_gate(carstate.leftBlindspot, carstate.rightBlindspot, blinker_state, not self.disableBlindSpot):
+      auto_lane_change_trigger = False
 
     if not lateral_active or self.lane_change_timer > LANE_CHANGE_TIME_MAX: #横向未激活或变道时间超过10秒时，退出变道控制
       if self.lane_change_state != LaneChangeState.off:
@@ -1249,6 +1255,8 @@ class DesireHelper:
         self.lane_change_ll_prob = max(self.lane_change_ll_prob - LANE_CHANGE_STEP_CUSTO, 0.0)
         # M-15: 与触发段统一 fail-safe 语义；失效（0.0 / 消息缺失）同样中止，
         # 且整个 laneChangeStarting 阶段持续复检，不再受 ll_prob > 0.3 的约 350 ms 权限窗限制
+        # 未装后向雷达(RearRadarEnable=0)时：触发段已禁用自动变道；此处保留复检作为兜底——
+        # 自动发起的变道在 TTC 失效时一律中止，驾驶员手动变道不受影响
         _alive = self.sm.alive['amapNavi']
         _ttc = amapNavi.lidarBehindVdistTime if _alive else 0.0
         _mode = amapNavi.overtakeMode if _alive and amapNavi.overtakeMode in (0, 1, 2) else 1

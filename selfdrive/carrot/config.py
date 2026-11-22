@@ -151,6 +151,7 @@ class UnifiedParams:
             "DynamicBlindRange": 0,
             "DynamicBlindDistance":0,
             "DisableBlindSpot": 0,
+            "RearRadarEnable": 0,
             "BsdDelayTime": 20,
             "SideBsdDelayTime": 20,
             "SideRelDistTime": 10,
