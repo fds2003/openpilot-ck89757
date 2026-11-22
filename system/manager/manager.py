@@ -169,7 +169,7 @@ def get_default_params():
     ("SpeedFromPCM", "2"),
     ("SteerActuatorDelay", "30"),
     ("MaxTimeOffroadMin", "60"),
-    ("DisableDM", "1"),
+    ("DisableDM", "0"),
     ("EnableConnect", "0"),
     ("MuteDoor", "0"),
     ("MuteSeatbelt", "0"),
