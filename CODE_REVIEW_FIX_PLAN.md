@@ -27,11 +27,12 @@
   - 修复：注册 key + HTML 开关 + 默认值确认；测试改用真实 Params（或 OpenpilotPrefix 沙箱）。
   - 落地：params_keys.h 注册 `{"CarrotEchoCmdEnable", PERSISTENT}`（nav_params 页保存路径经 UnifiedParams._save_system_param 依赖此注册）；config.py 默认 0；nav_params.html 新增开关（公共参数设置组）；carrot_settings.json / apilot.json 清单补条目。静态契约测试替代 MockParams（设备 .so 环境限制），写入路径语义经 config.py:74 核实。
 
-- [ ] **P0-4 (Spec) amapNavi stale 时的 legacy BSD fallback 被回退**
+- [x] **P0-4 (Spec) amapNavi stale 时的 legacy BSD fallback 被回退**（已修复，TDD GREEN：test_rear_radar_gating / test_lane_change_abort_gating 扩展 13 用例）
   - 位置：`selfdrive/carrot/amap_navi.py:311-315`、`desire_helper.py:956-967`
   - 问题：`lidar_online = lidar_l and lidar_r`，非双雷达配置永远 `rear_conflict` 阻塞全部自动变道；214baad1 承诺的 fallback 无提交声明撤回。
   - 需求：214baad1 "fall back to legacy BSD blind-spot gating when amapNavi stale or rear sensors never seen"。
   - 修复：amapNavi 超时/从未见后向传感器 → 回退 BSD 门控，而非永久阻塞。
+  - 落地：`rear_gate.evaluate_rear_gate / evaluate_lane_change_abort` 新增 `rear_sensor_seen` 参数——传感器**从未上线**（desire_helper 以 `amapNavi.leftDevice/rightDevice` bit0 锁存）→ 回退 BSD 门控（放行不播报，方向防护由 evaluate_bsm_gate 承担）；**曾上线后失效** → 保持 fail-safe 阻断+播报；`RearRadarEnable=0`（未装雷达）行为不变。触发段与执行段（laneChangeStarting）语义一致，消除"触发放行、执行中止"矛盾。
 
 - [ ] **P0-5 (Standards) 15 个测试文件 `import unittest` + 自建 runner（TID251 红线）**
   - 位置：`selfdrive/carrot/tests/`（15 文件）、`run_all_tdd_tests.py`

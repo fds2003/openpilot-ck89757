@@ -66,5 +66,49 @@ class TestRearRadarGating(unittest.TestCase):
     self.assertTrue(block)
 
 
+class TestRearSensorNeverSeenFallback(unittest.TestCase):
+  """P0-4: RearRadarEnable=1 但后向传感器从未上线 → 回退原车 BSD 门控。
+
+  - 不阻断自动变道（由 evaluate_bsm_gate 承担方向相关防护）
+  - 不播报"后方来车"（TTC 数据无意义，避免误报）
+  - 传感器曾上线后失效 → 保持 fail-safe 阻断 + 播报
+  """
+
+  def test_never_seen_stale_ttc_falls_back_to_bsd(self):
+    # TTC=0.0 失效哨兵 + 传感器从未上线：放行（回退 BSD 门控），不播报
+    block, audio = evaluate_rear_gate(True, 0.0, 1, True, rear_sensor_seen=False)
+    self.assertFalse(block)
+    self.assertFalse(audio)
+
+  def test_never_seen_clear_lane_permits(self):
+    block, audio = evaluate_rear_gate(True, 99.0, 1, True, rear_sensor_seen=False)
+    self.assertFalse(block)
+    self.assertFalse(audio)
+
+  def test_never_seen_amap_dead_falls_back_to_bsd(self):
+    block, audio = evaluate_rear_gate(True, 99.0, 1, False, rear_sensor_seen=False)
+    self.assertFalse(block)
+    self.assertFalse(audio)
+
+  def test_seen_then_failed_keeps_failsafe_block(self):
+    # 曾上线后失效：TTC=0.0 依旧 fail-safe 阻断 + 播报（真实传感器故障）
+    block, audio = evaluate_rear_gate(True, 0.0, 1, True, rear_sensor_seen=True)
+    self.assertTrue(block)
+    self.assertTrue(audio)
+
+  def test_confirmed_fast_rear_car_always_blocks(self):
+    # 无论是否 seen，正 TTC 且不足阈值都阻断 + 播报
+    for seen in (True, False):
+      with self.subTest(seen=seen):
+        block, audio = evaluate_rear_gate(True, 1.0, 1, True, rear_sensor_seen=seen)
+        self.assertTrue(block)
+        self.assertTrue(audio)
+
+  def test_no_radar_unaffected_by_seen_flag(self):
+    block, audio = evaluate_rear_gate(False, 0.0, 1, True, rear_sensor_seen=False)
+    self.assertTrue(block)
+    self.assertFalse(audio)
+
+
 if __name__ == "__main__":
   unittest.main()

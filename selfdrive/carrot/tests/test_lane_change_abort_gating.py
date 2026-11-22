@@ -84,5 +84,35 @@ class TestLaneChangeAbort(unittest.TestCase):
     self.assertTrue(evaluate_lane_change_abort(False, True, 2.0, 7))
 
 
+class TestAbortNeverSeenFallback(unittest.TestCase):
+  """P0-4: 后向传感器从未上线 → 执行段复检同步回退，与触发段一致。
+
+  否则触发段放行、执行段立刻中止（ttc=0.0），自动变道自相矛盾地永远无法完成。
+  """
+
+  def test_auto_not_aborted_when_never_seen(self):
+    # 自动发起 + 传感器从未上线 + TTC 失效哨兵：不中止（回退 BSD 门控）
+    self.assertFalse(evaluate_lane_change_abort(False, True, 0.0, 1, rear_sensor_seen=False))
+
+  def test_cmd_not_aborted_when_never_seen(self):
+    # 远程 cmd 同样回退（P0-2 的 fail-safe 仅适用于"曾上线后失效"场景）
+    self.assertFalse(evaluate_lane_change_abort(False, False, 99.0, 1, rear_sensor_seen=False))
+
+  def test_seen_then_failed_keeps_failsafe_abort(self):
+    # 曾上线后失效：自动/cmd 路径依旧 fail-safe 中止
+    self.assertTrue(evaluate_lane_change_abort(False, True, 0.0, 1, rear_sensor_seen=True))
+    self.assertTrue(evaluate_lane_change_abort(False, False, 99.0, 1, rear_sensor_seen=True))
+
+  def test_confirmed_fast_rear_car_always_aborts(self):
+    for seen in (True, False):
+      with self.subTest(seen=seen):
+        self.assertTrue(evaluate_lane_change_abort(False, True, 1.0, 1, rear_sensor_seen=seen))
+
+  def test_driver_path_unaffected_by_seen_flag(self):
+    # 驾驶员路径始终宽松：传感器失效/未上线不阻断
+    self.assertFalse(evaluate_lane_change_abort(True, True, 0.0, 1, rear_sensor_seen=False))
+    self.assertFalse(evaluate_lane_change_abort(True, False, 0.0, 1, rear_sensor_seen=True))
+
+
 if __name__ == "__main__":
   unittest.main()

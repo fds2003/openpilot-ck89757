@@ -247,6 +247,7 @@ class DesireHelper:
     self.driver_lane_change_delay = 0.0
     self.disableBlindSpot = False
     self.rear_radar = False  # RearRadarEnable: 1=安装了后向雷达(启用TTC门禁), 0=未安装(跳过门禁与播报)
+    self.rear_sensor_seen = False  # P0-4: 后向雷达曾上线锁存；从未上线→回退BSD门控，曾上线后失效→fail-safe
     self.atc_bsd = BLINKER_NONE
     self.first_bsd_speak = False
     self.atc_resume_cnt = 5
@@ -963,8 +964,13 @@ class DesireHelper:
     # RearRadarEnable=0（未装后向雷达）时：默认不允许自动变道（阻断触发路径），
     # 但不播报"后方来车"，否则 behind_ttc 恒为 0.0 失效哨兵会每 2 秒误报"盲区有车"。
     # 驾驶员手动打灯变道不受影响。判定逻辑见 rear_gate.evaluate_rear_gate（TDD 覆盖）。
+    # P0-4: 后向雷达曾上线锁存（leftDevice/rightDevice bit0 = 雷达在线，见 amap_navi 发布端）；
+    # 进程生命周期内一旦上线即视为 seen，之后失效走 fail-safe，从未上线走 BSD 门控回退
+    if self.sm.alive['amapNavi'] and (amapNavi.leftDevice & 1) and (amapNavi.rightDevice & 1):
+      self.rear_sensor_seen = True
     block_auto, play_audio = evaluate_rear_gate(
-      self.rear_radar, amapNavi.lidarBehindVdistTime, amapNavi.overtakeMode, self.sm.alive['amapNavi'])
+      self.rear_radar, amapNavi.lidarBehindVdistTime, amapNavi.overtakeMode,
+      self.sm.alive['amapNavi'], self.rear_sensor_seen)
     if block_auto:
       auto_lane_change_trigger = False
       auto_lane_change_trigger_no_bsd = False
@@ -1267,7 +1273,8 @@ class DesireHelper:
         # P0-2: 远程车机指令(trigger_name="cmd")不属于驾驶员手动变道，
         # 必须走 fail-safe 严格中止分支；判定与复检逻辑见 rear_gate.py（TDD 覆盖）
         is_driver_initiated = is_driver_initiated_change(self.trigger_type, self.trigger_name)
-        abort = evaluate_lane_change_abort(is_driver_initiated, _alive, _ttc, amapNavi.overtakeMode)
+        abort = evaluate_lane_change_abort(is_driver_initiated, _alive, _ttc,
+                                           amapNavi.overtakeMode, self.rear_sensor_seen)
 
         if abort:
           self.lane_change_state = LaneChangeState.off

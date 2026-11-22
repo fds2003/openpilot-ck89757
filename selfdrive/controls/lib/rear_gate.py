@@ -17,7 +17,8 @@ BLINKER_BOTH = 3
 REAR_TTC_THRESHOLDS = {0: 1.8, 1: 2.5, 2: 3.5}
 
 
-def evaluate_rear_gate(rear_radar: bool, behind_ttc: float, overtake_mode: int, amap_alive: bool) -> tuple[bool, bool]:
+def evaluate_rear_gate(rear_radar: bool, behind_ttc: float, overtake_mode: int,
+                       amap_alive: bool, rear_sensor_seen: bool = True) -> tuple[bool, bool]:
   """判定后方 TTC 门禁与自动变道阻断。
 
   Args:
@@ -25,6 +26,9 @@ def evaluate_rear_gate(rear_radar: bool, behind_ttc: float, overtake_mode: int, 
     behind_ttc: amapNavi.lidarBehindVdistTime；0.0 = 无效/缺失哨兵，99.0 = 净空。
     overtake_mode: OVERTAKE 档位，非法值回退标准档（2.5s）。
     amap_alive: amapNavi 消息是否在线。
+    rear_sensor_seen: 后向雷达（左右两侧）是否曾上线。P0-4：
+      从未上线 → 回退原车 BSD 门控（放行 + 不播报，方向防护由
+      evaluate_bsm_gate 承担）；曾上线后失效 → fail-safe 阻断 + 播报。
 
   Returns:
     (block_auto, play_audio):
@@ -36,9 +40,15 @@ def evaluate_rear_gate(rear_radar: bool, behind_ttc: float, overtake_mode: int, 
     return (True, False)
 
   threshold = REAR_TTC_THRESHOLDS.get(overtake_mode, REAR_TTC_THRESHOLDS[1])
-  # fail-safe：消息缺失 / TTC 失效(<=0.0) / 逼近车辆 TTC 不足 一律阻断并播报
-  conflict = (not amap_alive) or (behind_ttc <= 0.0) or (behind_ttc < threshold)
-  if conflict:
+  # 正 TTC 且不足阈值：确有后车逼近，无论传感器历史状态都阻断并播报
+  if 0.0 < behind_ttc < threshold:
+    return (True, True)
+  # P0-4: TTC 失效(<=0.0)或消息缺失时按传感器历史分流——
+  # 从未上线：数据源本就不存在，回退 BSD 门控而非永久阻断
+  if (not amap_alive) or (behind_ttc <= 0.0):
+    if not rear_sensor_seen:
+      return (False, False)
+    # 曾上线后失效：真实传感器故障，fail-safe 阻断并播报
     return (True, True)
   return (False, False)
 
@@ -91,23 +101,30 @@ def is_driver_initiated_change(trigger_type: int, trigger_name: str) -> bool:
 
 
 def evaluate_lane_change_abort(is_driver_initiated: bool, amap_alive: bool,
-                               behind_ttc: float, overtake_mode: int) -> bool:
-  """laneChangeStarting 阶段的后方 TTC 复检（M-15 / P0-2）。
+                               behind_ttc: float, overtake_mode: int,
+                               rear_sensor_seen: bool = True) -> bool:
+  """laneChangeStarting 阶段的后方 TTC 复检（M-15 / P0-2 / P0-4）。
 
   Args:
     is_driver_initiated: is_driver_initiated_change() 的判定结果。
     amap_alive: amapNavi 消息是否在线。
     behind_ttc: amapNavi.lidarBehindVdistTime；0.0 = 无效/缺失哨兵，99.0 = 净空。
     overtake_mode: OVERTAKE 档位，非法值回退标准档（2.5s）。
+    rear_sensor_seen: 后向雷达是否曾上线（P0-4 回退语义，与 evaluate_rear_gate 一致）。
 
   Returns:
     True = 中止变道；False = 继续执行。
   """
   threshold = REAR_TTC_THRESHOLDS.get(overtake_mode, REAR_TTC_THRESHOLDS[1])
+  # 确认后车急追：无论发起方与传感器历史状态都中止并告警
+  if amap_alive and (0.0 < behind_ttc < threshold):
+    return True
+  # P0-4: 传感器从未上线 → 与触发段一致回退 BSD 门控，不因失效哨兵/消息缺失中止
+  if not rear_sensor_seen:
+    return False
   if is_driver_initiated:
-    # 驾驶员手动打灯变道：仅传感器在线且确认后车急追（0 < TTC < 门限）才中止；
-    # 传感器失效/离线/未装雷达 决不阻断驾驶员自主变道，回退原生 BSD 监控
-    return amap_alive and (0.0 < behind_ttc < threshold)
-  # 车机指令/自动变道（OVERTAKE/ATC/远程 cmd）：fail-safe ——
-  # 消息缺失 / TTC 失效(<=0.0，未确认清空) / TTC 不足 一律严密中止
-  return (not amap_alive) or (behind_ttc <= 0.0) or (behind_ttc < threshold)
+    # 驾驶员手动打灯变道：传感器失效/离线决不阻断自主变道，回退原生 BSD 监控
+    return False
+  # 车机指令/自动变道（OVERTAKE/ATC/远程 cmd）+ 传感器曾上线：fail-safe ——
+  # 消息缺失 / TTC 失效(<=0.0，未确认清空) 一律严密中止
+  return (not amap_alive) or (behind_ttc <= 0.0)
