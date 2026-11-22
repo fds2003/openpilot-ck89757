@@ -10,14 +10,14 @@ from openpilot.common.swaglog import cloudlog
 
 
 def set_time(new_time):
-  diff = datetime.datetime.now() - new_time
-  if diff < datetime.timedelta(seconds=10):
-    cloudlog.debug(f"Time diff too small: {diff}")
+  diff = abs((datetime.datetime.now() - new_time).total_seconds())
+  if diff < 5:
+    cloudlog.debug(f"Time diff too small: {diff}s")
     return
 
   cloudlog.debug(f"Setting time to {new_time}")
   try:
-    subprocess.run(f"TZ=UTC date -s '{new_time}'", shell=True, check=True)
+    subprocess.run(f"TZ=UTC date -s '{new_time.isoformat()}'", shell=True, check=True)
   except subprocess.CalledProcessError:
     cloudlog.exception("timed.failed_setting_time")
 

@@ -79,6 +79,7 @@ def manager_init() -> None:
     ("LkasToggle", "0"),
     ("MadsIconToggle", "1"),
     ("MapdVersion", f"{VERSION}"),
+    ("MapWidget", "0"),
     ("MaxTimeOffroad", "9"),
     ("NNFF", "0"),
     ("OnroadScreenOff", "-2"),

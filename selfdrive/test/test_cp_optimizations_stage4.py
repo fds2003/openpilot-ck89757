@@ -146,6 +146,81 @@ class TestCpOptimizationsStage4(unittest.TestCase):
 
     self.assertIn("cleanup_shared_memory_on_start", content, "manager.py 未集成 cleanup_shared_memory_on_start")
 
+  def test_map_widget_default_disabled(self):
+    """验证地图小部件 MapWidget 默认在 manager default_params 中配置为 0 (关闭状态)"""
+    manager_path = BASE_DIR / "system" / "manager" / "manager.py"
+    self.assertTrue(manager_path.exists())
+    content = manager_path.read_text(encoding="utf-8")
+    self.assertIn('("MapWidget", "0")', content, "manager.py default_params 中未将 MapWidget 默认值设置为 0")
+
+  def test_timed_gps_sync_logic(self):
+    """验证 system/timed.py 修复负数时间差判断 Bug，确保离线与落后时间下绝对值比对放行授时"""
+    from unittest.mock import patch, MagicMock
+    import datetime
+    import types
+    import importlib.machinery
+
+    # Mock cereal 与 common 依赖，保证 Windows 无 capnp 环境下可加载 timed.py
+    if "cereal" not in sys.modules or not hasattr(sys.modules["cereal"], "__path__"):
+      mock_cereal = types.ModuleType("cereal")
+      mock_cereal.__path__ = []
+      mock_cereal.__spec__ = importlib.machinery.ModuleSpec("cereal", None, is_package=True)
+      mock_messaging = types.ModuleType("cereal.messaging")
+      mock_messaging.__spec__ = importlib.machinery.ModuleSpec("cereal.messaging", None)
+      mock_cereal.messaging = mock_messaging
+      sys.modules["cereal"] = mock_cereal
+      sys.modules["cereal.messaging"] = mock_messaging
+    if "openpilot.common.time" not in sys.modules:
+      mock_comm_time = types.ModuleType("openpilot.common.time")
+      mock_comm_time.system_time_valid = lambda: True
+      sys.modules["openpilot.common.time"] = mock_comm_time
+    if "openpilot.common.swaglog" not in sys.modules:
+      mock_swaglog = types.ModuleType("openpilot.common.swaglog")
+      mock_swaglog.cloudlog = MagicMock()
+      sys.modules["openpilot.common.swaglog"] = mock_swaglog
+
+    # 动态加载 timed 模块
+    import importlib.util
+    timed_path = BASE_DIR / "system" / "timed.py"
+    spec = importlib.util.spec_from_file_location("timed", timed_path)
+    timed_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(timed_mod)
+
+    now = datetime.datetime(2026, 11, 23, 12, 0, 0)
+
+    # 场景 1: 系统时间严重落后于 GPS 时间 (例如设备冷启动为 1970年或昨天，now < gps_time)
+    # 原逻辑 diff = now - gps_time 为负数 timedelta，在 Python 中负数 < 10s 恒为 True 导致授时被吞
+    # 新逻辑 abs(diff) > 5s 应正常触发授时
+    gps_time_ahead = datetime.datetime(2026, 11, 23, 14, 0, 0) # GPS 比系统快 2 小时
+    mock_datetime_module = MagicMock()
+    mock_datetime_module.datetime.now.return_value = now
+    with patch.object(timed_mod, "datetime", mock_datetime_module), \
+         patch.object(timed_mod.subprocess, "run") as mock_run:
+      timed_mod.set_time(gps_time_ahead)
+      self.assertEqual(mock_run.call_count, 1, "系统时间严重落后时未能触发 date -s 授时！")
+      cmd = mock_run.call_args[0][0]
+      self.assertIn("2026-11-23T14:00:00", cmd)
+
+    # 场景 2: 系统时间与 GPS 时间偏差小于 5 秒，不应重复高频写时钟
+    gps_time_close = datetime.datetime(2026, 11, 23, 12, 0, 3) # 偏差 3 秒
+    mock_datetime_module = MagicMock()
+    mock_datetime_module.datetime.now.return_value = now
+    with patch.object(timed_mod, "datetime", mock_datetime_module), \
+         patch.object(timed_mod.subprocess, "run") as mock_run:
+      timed_mod.set_time(gps_time_close)
+      self.assertEqual(mock_run.call_count, 0, "偏差小于 5 秒时误触发了授时！")
+
+    # 场景 3: 系统时间超前于 GPS 时间，偏差超过 5 秒
+    gps_time_behind = datetime.datetime(2026, 11, 23, 11, 0, 0) # 系统比 GPS 快 1 小时
+    mock_datetime_module = MagicMock()
+    mock_datetime_module.datetime.now.return_value = now
+    with patch.object(timed_mod, "datetime", mock_datetime_module), \
+         patch.object(timed_mod.subprocess, "run") as mock_run:
+      timed_mod.set_time(gps_time_behind)
+      self.assertEqual(mock_run.call_count, 1, "系统时间超前时未能触发 date -s 授时！")
+
+
+
 
 if __name__ == "__main__":
   unittest.main()
