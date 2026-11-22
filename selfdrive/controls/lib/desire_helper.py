@@ -3,7 +3,8 @@ from openpilot.common.conversions import Conversions as CV
 from openpilot.common.realtime import DT_MDL
 import numpy as np
 from openpilot.selfdrive.modeld.constants import ModelConstants
-from openpilot.selfdrive.controls.lib.rear_gate import evaluate_rear_gate, evaluate_bsm_gate
+from openpilot.selfdrive.controls.lib.rear_gate import (
+  evaluate_rear_gate, evaluate_bsm_gate, evaluate_lane_change_abort, is_driver_initiated_change)
 from openpilot.selfdrive.carrot.config import UnifiedParams
 from collections import deque
 #new
@@ -1259,16 +1260,10 @@ class DesireHelper:
         # 自动发起的变道在 TTC 失效时一律中止，驾驶员手动变道不受影响
         _alive = self.sm.alive['amapNavi']
         _ttc = amapNavi.lidarBehindVdistTime if _alive else 0.0
-        _mode = amapNavi.overtakeMode if _alive and amapNavi.overtakeMode in (0, 1, 2) else 1
-        _thr = {0: 1.8, 1: 2.5, 2: 3.5}.get(_mode, 2.5)
-        is_driver_initiated = (self.trigger_type in (1, 2, 3) or self.trigger_name in ("driver", "torque bsd", "torque ok"))
-        if is_driver_initiated:
-          # 驾驶员手动打灯变道：若雷达/车机传感器在线且检测到后车急追(TTC < 门限)，则触发安全告警或阻断；
-          # 若车机离线或未装雷达(_alive=False / _ttc<=0)，决不阻断驾驶员自主变道，回退至原生BSD监控！
-          abort = _alive and (0.0 < _ttc < _thr)
-        else:
-          # 车机/自动发起的变道(OVERTAKE/ATC)：传感器失效/离线(_ttc <= 0) 或 TTC不足(< _thr)，一律严密阻断 Fail-Safe
-          abort = (_ttc <= 0.0) or (_ttc < _thr)
+        # P0-2: 远程车机指令(trigger_name="cmd")不属于驾驶员手动变道，
+        # 必须走 fail-safe 严格中止分支；判定与复检逻辑见 rear_gate.py（TDD 覆盖）
+        is_driver_initiated = is_driver_initiated_change(self.trigger_type, self.trigger_name)
+        abort = evaluate_lane_change_abort(is_driver_initiated, _alive, _ttc, amapNavi.overtakeMode)
 
         if abort:
           self.lane_change_state = LaneChangeState.off

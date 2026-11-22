@@ -66,3 +66,48 @@ def evaluate_bsm_gate(bsm_left: bool, bsm_right: bool, blinker_state: int, bsm_e
     return bool(bsm_right)
   # 方向未知（NONE）或双闪（BOTH）时不阻断，避免误伤
   return False
+
+
+# 驾驶员手动发起的变道触发类型/名称（desire_helper.py trigger 赋值处保持一致）：
+# trigger_type 1="torque bsd" 2="torque ok" 3="driver"；trigger_type 3 还可能为
+# trigger_name="cmd"（远程车机指令），P0-2 要求其排除在驾驶员路径之外。
+DRIVER_TRIGGER_TYPES = (1, 2, 3)
+DRIVER_TRIGGER_NAMES = ("driver", "torque bsd", "torque ok")
+
+
+def is_driver_initiated_change(trigger_type: int, trigger_name: str) -> bool:
+  """判定变道发起方是否为驾驶员手动操作。
+
+  P0-2：trigger_type 3 同时覆盖 "driver"（打灯）与 "cmd"（远程车机指令），
+  远程指令必须排除，否则走宽松 abort 条件，amapNavi 离线或 TTC=0.0 时
+  反而不中止，违背 fail-safe 语义。
+
+  Returns:
+    True = 驾驶员手动变道（复检用宽松条件）；False = 车机指令/自动（fail-safe）。
+  """
+  if trigger_name == "cmd":
+    return False
+  return trigger_type in DRIVER_TRIGGER_TYPES or trigger_name in DRIVER_TRIGGER_NAMES
+
+
+def evaluate_lane_change_abort(is_driver_initiated: bool, amap_alive: bool,
+                               behind_ttc: float, overtake_mode: int) -> bool:
+  """laneChangeStarting 阶段的后方 TTC 复检（M-15 / P0-2）。
+
+  Args:
+    is_driver_initiated: is_driver_initiated_change() 的判定结果。
+    amap_alive: amapNavi 消息是否在线。
+    behind_ttc: amapNavi.lidarBehindVdistTime；0.0 = 无效/缺失哨兵，99.0 = 净空。
+    overtake_mode: OVERTAKE 档位，非法值回退标准档（2.5s）。
+
+  Returns:
+    True = 中止变道；False = 继续执行。
+  """
+  threshold = REAR_TTC_THRESHOLDS.get(overtake_mode, REAR_TTC_THRESHOLDS[1])
+  if is_driver_initiated:
+    # 驾驶员手动打灯变道：仅传感器在线且确认后车急追（0 < TTC < 门限）才中止；
+    # 传感器失效/离线/未装雷达 决不阻断驾驶员自主变道，回退原生 BSD 监控
+    return amap_alive and (0.0 < behind_ttc < threshold)
+  # 车机指令/自动变道（OVERTAKE/ATC/远程 cmd）：fail-safe ——
+  # 消息缺失 / TTC 失效(<=0.0，未确认清空) / TTC 不足 一律严密中止
+  return (not amap_alive) or (behind_ttc <= 0.0) or (behind_ttc < threshold)

@@ -82,6 +82,8 @@ fail-safe 语义本身正确（传感器失效不得放行变道），但对**�
 
 注意：BSM 门禁**只**阻断 `auto_lane_change_trigger`，不动 `_no_bsd` 变体与手动扭矩变道路径；执行段兜底保留无条件复检，即使自动变道意外进入 `laneChangeStarting` 也会被 fail-safe 中止。
 
+P0-2 补充：执行段复检的发起方判定收敛为 `rear_gate.is_driver_initiated_change()`——远程车机指令（`trigger_name="cmd"`）**不属于**驾驶员手动变道，归入 fail-safe 严格分支（amapNavi 离线 / TTC≤0.0 一律中止）；复检判定本体为 `rear_gate.evaluate_lane_change_abort()`，两者均有 TDD 覆盖（`test_lane_change_abort_gating.py`）。
+
 ### 2.4 未改动部分（既有行为保持）
 
 - 手动变道 BSD 阻断（`desire_helper.py` preLaneChange 的 `blindspot_detected_counter` + `BsdDelayTime`）

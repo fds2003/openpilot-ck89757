@@ -12,11 +12,12 @@
   - 需求：README「CANCEL 指令 50ms 内立即中止变道」/ COOPERATIVE_PILOT.md:88。
   - 修复：CANCEL 消费提到计数判断之前（独立 if 分支，优先级最高）；补一条端到端时序测试。
 
-- [ ] **P0-2 (Spec) 远程指令变道未走 fail-safe TTC 中止**
+- [x] **P0-2 (Spec) 远程指令变道未走 fail-safe TTC 中止**（已修复，TDD GREEN：test_lane_change_abort_gating.py 13 用例）
   - 位置：`desire_helper.py:1159-1163, 1258`
   - 问题：`trigger_type == 3` 同时覆盖 `trigger_name == "cmd"`（远程），`is_driver_initiated` 误判为 True，使用宽松 abort 条件 `0.0 < _ttc < _thr`；amapNavi 死亡或 ttc=0.0 时反而不中止。
   - 需求：39ded308 "decouple driver vs remote TTC abort"；98e0f4df "amapNavi dead -> behind_ttc=0.0 -> fail-safe block"。
   - 修复：`is_driver_initiated` 排除 `trigger_name == "cmd"`；ttc=0.0 视为未确认清空 → 中止。
+  - 落地：rear_gate.py 新增 `is_driver_initiated_change()` / `evaluate_lane_change_abort()` 纯函数，desire_helper.py 执行段复检改为调用；cmd 变道归入 fail-safe 严格分支。
 
 - [ ] **P0-3 (Spec) echo_cmd UI 开关缺失，功能永久死路**
   - 位置：`common/params_keys.h`、`selfdrive/carrot/nav_params.html`、`carrot_man.py:882-886`
