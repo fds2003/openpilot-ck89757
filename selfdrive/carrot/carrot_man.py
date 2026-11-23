@@ -944,9 +944,13 @@ class CarrotMan:
           cmd_enabled = self.params.get_bool("CarrotEchoCmdEnable")
           is_onroad = self.params.get_bool("IsOnroad")
           if not cmd_enabled:
-            echo = json.dumps({"echo_cmd": json_obj['echo_cmd'], "exitStatus": -1, "result": "", "error": "echo_cmd is disabled by user switch (CarrotEchoCmdEnable=0)"})
+            echo = json.dumps({
+              "echo_cmd": json_obj['echo_cmd'], "exitStatus": -1, "result": "",
+              "error": "echo_cmd is disabled by user switch (CarrotEchoCmdEnable=0)"})
           elif is_onroad:
-            echo = json.dumps({"echo_cmd": json_obj['echo_cmd'], "exitStatus": 423, "result": "", "error": "echo_cmd is locked during onroad driving for safety"})
+            echo = json.dumps({
+              "echo_cmd": json_obj['echo_cmd'], "exitStatus": 423, "result": "",
+              "error": "echo_cmd is locked during onroad driving for safety"})
           else:
             # S-1: restrict to whitelisted commands only, never use shell=True
             cmd_name = json_obj['echo_cmd']
