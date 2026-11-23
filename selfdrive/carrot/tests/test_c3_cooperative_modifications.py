@@ -14,6 +14,11 @@ import re
 import time
 
 C3_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../"))
+sys_path = os.path.join(C3_ROOT, "selfdrive", "carrot", "tests")
+
+from test_quality_fixes_q4_q5_q6 import _install_stubs, _load_module
+
+AMAP_NAVI = os.path.join(C3_ROOT, "selfdrive", "carrot", "amap_navi.py")
 
 
 class TestC3CooperativeModifications:
@@ -89,42 +94,13 @@ class TestC3CooperativeModifications:
   def test_command_parser_gating(self):
     """Verify command parser logic: monotonic seq, CANCEL conversion, param clamp, 10s reset"""
 
-    class SharedDataMock:
-      def __init__(self):
-        self.cmd_index = -1
-        self.remote_cmd = ""
-        self.remote_arg = ""
-        self.overtake_mode = 1
-        self.last_cmd_time = 0.0
-
-    shared = SharedDataMock()
+    # P1-4: 不再抄写生产逻辑副本——直接调用 amap_navi.parse_remote_command（真实生产函数）
+    _install_stubs()
+    amap = _load_module("amap_navi_c3", AMAP_NAVI)
+    shared = amap.SharedData()
 
     def update_command(json_obj):
-      idx = json_obj.get("index") or json_obj.get("seq")
-      try:
-        idx = int(idx)
-      except (TypeError, ValueError):
-        idx = None
-
-      now = time.time()
-      if now - getattr(shared, "last_cmd_time", 0.0) > 10.0:
-        shared.cmd_index = -1
-      shared.last_cmd_time = now
-
-      if idx is not None and (idx > shared.cmd_index or shared.cmd_index == -1):
-        shared.cmd_index = idx
-        if "cmd" in json_obj:
-          c = json_obj.get("cmd")
-          shared.remote_cmd = "CANCEL" if c == "CANCEL_LANE_CHANGE" else c
-          shared.remote_arg = json_obj.get("direction") or json_obj.get("arg")
-        raw = json_obj.get("param", json_obj.get("overtake_mode", None))
-        if raw is not None:
-          try:
-            r = int(raw)
-            if r in (0, 1, 2):
-              shared.overtake_mode = r
-          except (TypeError, ValueError):
-            pass
+      amap.parse_remote_command(json_obj, shared)
 
     # Packet 1: Initial valid command
     update_command({"cmd": "OVERTAKE", "arg": "LEFT", "param": 2, "seq": 10})

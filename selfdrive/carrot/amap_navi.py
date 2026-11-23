@@ -187,6 +187,49 @@ def round1(x):
 def round2(x):
   return round(float(x), 2)
 
+
+def parse_remote_command(json_obj, shared_data, now=None):
+  """解析车机指令（P1-4：index=0 是车机重启后首条指令的合法序号，
+  不得因 falsy 判断被丢弃——显式 `if "index" in json_obj` 取键）。
+
+  单调 seq 去重 + CANCEL 映射 + SPEED_LIMIT 速度提取 + OVERTAKE 参数钳位。
+  调用方（_update_command）负责 app_ip 校验与加锁；测试直连本函数复用
+  生产逻辑，杜绝抄写副本语义漂移。
+  """
+  if now is None:
+    now = time.time()
+  raw_idx = json_obj["index"] if "index" in json_obj else json_obj.get("seq")
+  try:
+    idx = int(raw_idx)
+  except (TypeError, ValueError):
+    idx = None
+  if now - getattr(shared_data, "last_cmd_time", 0.0) > 10.0:
+    shared_data.cmd_index = -1  # 超过 10 秒无指令，允许车机重启重置序号
+  shared_data.last_cmd_time = now
+
+  if idx is not None and (idx > shared_data.cmd_index or shared_data.cmd_index == -1):
+    shared_data.cmd_index = idx  # 单调递增，旧包/重放包不转发
+    if "cmd" in json_obj:
+      c = json_obj.get("cmd")
+      shared_data.remote_cmd = "CANCEL" if c == "CANCEL_LANE_CHANGE" else c
+      if c == "SPEED_LIMIT":
+        # 速度值优先取 v_cruise；兼容旧格式时 arg 必须是可解析的十进制数，绝不把车道码当速度
+        v = json_obj.get("v_cruise", json_obj.get("arg", ""))
+        try:
+          shared_data.remote_arg = str(int(float(v)))
+        except (TypeError, ValueError):
+          shared_data.remote_arg = ""
+      else:
+        shared_data.remote_arg = json_obj.get("direction") or json_obj.get("arg")
+    raw = json_obj.get("param", json_obj.get("overtake_mode", None))
+    if raw is not None:
+      try:
+        r = int(raw)
+        if r in (0, 1, 2):
+          shared_data.overtake_mode = r
+      except (TypeError, ValueError):
+        pass
+
 # =======================================================================================
 # Q-3: capnp 字段统一适配层
 # capnp schema 字段运行时存在性跨版本不确定，原先散落全文的 hasattr 防御调用
@@ -1173,38 +1216,7 @@ class AmapNaviServ:
     if self.shared_data.app_ip is not None and ip != self.shared_data.app_ip:
       return  # 拒绝热点内第三方注入；本机回环测试请在 fixture 中设置 app_ip
     with self._lock:
-      idx = json_obj.get("index") or json_obj.get("seq")
-      try:
-        idx = int(idx)
-      except (TypeError, ValueError):
-        idx = None
-      now = time.time()
-      if now - getattr(self.shared_data, "last_cmd_time", 0.0) > 10.0:
-        self.shared_data.cmd_index = -1  # 超过 10 秒无指令，允许车机重启重置序号
-      self.shared_data.last_cmd_time = now
-
-      if idx is not None and (idx > self.shared_data.cmd_index or self.shared_data.cmd_index == -1):
-        self.shared_data.cmd_index = idx  # 单调递增，旧包/重放包不转发
-        if "cmd" in json_obj:
-          c = json_obj.get("cmd")
-          self.shared_data.remote_cmd = "CANCEL" if c == "CANCEL_LANE_CHANGE" else c
-          if c == "SPEED_LIMIT":
-            # 速度值优先取 v_cruise；兼容旧格式时 arg 必须是可解析的十进制数，绝不把车道码当速度
-            v = json_obj.get("v_cruise", json_obj.get("arg", ""))
-            try:
-              self.shared_data.remote_arg = str(int(float(v)))
-            except (TypeError, ValueError):
-              self.shared_data.remote_arg = ""
-          else:
-            self.shared_data.remote_arg = json_obj.get("direction") or json_obj.get("arg")
-        raw = json_obj.get("param", json_obj.get("overtake_mode", None))
-        if raw is not None:
-          try:
-            r = int(raw)
-            if r in (0, 1, 2):
-              self.shared_data.overtake_mode = r
-          except (TypeError, ValueError):
-            pass
+      parse_remote_command(json_obj, self.shared_data)
 
   # ----------------------
   # 更新雷达/摄像头盲区与距离数据

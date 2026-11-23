@@ -19,6 +19,7 @@ import cereal.messaging as messaging
 from openpilot.common.realtime import Ratekeeper
 from openpilot.common.params import Params
 from openpilot.selfdrive.carrot.config import UnifiedParams
+from openpilot.selfdrive.carrot.echo_cmd_gate import handle_echo_cmd
 from openpilot.common.filter_simple import MyMovingAverage
 from openpilot.system.hardware import PC, TICI
 from openpilot.selfdrive.navd.helpers import Coordinate
@@ -941,33 +942,9 @@ class CarrotMan:
             self.make_tmux_data()
             self.send_tmux(os.environ.get("CARROT_FTP_PASSWORD", ""), "exception")
         elif 'echo_cmd' in json_obj:
-          cmd_enabled = self.params.get_bool("CarrotEchoCmdEnable")
-          is_onroad = self.params.get_bool("IsOnroad")
-          if not cmd_enabled:
-            echo = json.dumps({
-              "echo_cmd": json_obj['echo_cmd'], "exitStatus": -1, "result": "",
-              "error": "echo_cmd is disabled by user switch (CarrotEchoCmdEnable=0)"})
-          elif is_onroad:
-            echo = json.dumps({
-              "echo_cmd": json_obj['echo_cmd'], "exitStatus": 423, "result": "",
-              "error": "echo_cmd is locked during onroad driving for safety"})
-          else:
-            # S-1: restrict to whitelisted commands only, never use shell=True
-            cmd_name = json_obj['echo_cmd']
-            if cmd_name not in echo_cmd_whitelist:
-              echo = json.dumps({"echo_cmd": cmd_name, "exitStatus": -3, "result": "",
-                                 "error": f"S-1: command '{cmd_name}' not in whitelist. Allowed: {list(echo_cmd_whitelist.keys())}"})
-            else:
-              try:
-                result = echo_cmd_whitelist[cmd_name]()
-                exitStatus = result.returncode
-                stdout = result.stdout or ""
-                stderr = result.stderr or ""
-                echo = json.dumps({"echo_cmd": cmd_name, "exitStatus": exitStatus,
-                                   "result": stdout, "error": stderr})
-              except Exception as e:
-                echo = json.dumps({"echo_cmd": cmd_name, "exitStatus": -2, "result": "",
-                                   "error": f"S-1 exception: {str(e)}"})
+          # P1-4: 门控逻辑收敛至 echo_cmd_gate.handle_echo_cmd（生产单一实现，
+          # 测试直连该模块，消除抄写副本与 shell=True 语义漂移）
+          echo = json.dumps(handle_echo_cmd(json_obj, self.params, self.params.get_bool("IsOnroad"), echo_cmd_whitelist))
           socket.send(echo.encode())
         elif 'tmux_send' in json_obj:
           self.make_tmux_data()

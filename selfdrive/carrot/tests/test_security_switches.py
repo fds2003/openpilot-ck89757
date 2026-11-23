@@ -3,10 +3,14 @@
 selfdrive/carrot/tests/test_security_switches.py
 =====================================================================
 TDD 单元测试套件：P0 级安全开关与行车硬锁死行为断言
+
+P1-4：echo_cmd 门控不再抄写生产逻辑副本——直接导入
+selfdrive/carrot/echo_cmd_gate.handle_echo_cmd（生产单一实现）。
 =====================================================================
 """
-import json
-import subprocess
+import pytest
+
+from openpilot.selfdrive.carrot.echo_cmd_gate import handle_echo_cmd
 
 class MockParams:
   def __init__(self, init_dict=None):
@@ -19,43 +23,34 @@ class MockParams:
     val = self.data.get(key)
     return str(val).encode('utf-8') if val is not None else None
 
-def handle_echo_cmd_logic(json_obj, params, is_onroad):
-  """提取 carrot_man.py 中的 echo_cmd 处理逻辑纯函数"""
-  if 'echo_cmd' not in json_obj:
-    return None
-
-  cmd_enabled = params.get_bool("CarrotEchoCmdEnable")
-  if not cmd_enabled:
-    return {"exitStatus": -1, "error": "echo_cmd is disabled by user switch (CarrotEchoCmdEnable=0)"}
-  elif is_onroad:
-    return {"exitStatus": 423, "error": "echo_cmd is locked during onroad driving for safety"}
-  else:
-    result = subprocess.run(json_obj['echo_cmd'], shell=True, capture_output=True, text=True)
-    return {"exitStatus": result.returncode, "result": result.stdout, "error": result.stderr}
+# 测试白名单：固定 lambda，杜绝 shell=True 语义漂移
+TEST_WHITELIST = {
+  "params_dump": lambda: (0, "safe_debug_success", ""),
+}
 
 class TestSecuritySwitches:
 
   def test_echo_cmd_disabled_by_default(self):
     """断言 1: 默认情况下 (CarrotEchoCmdEnable=0)，任何 echo_cmd 必须被安全拦截"""
     params = MockParams({"CarrotEchoCmdEnable": 0})
-    req = {"echo_cmd": "echo 'malicious_test'"}
-    resp = handle_echo_cmd_logic(req, params, is_onroad=False)
+    req = {"echo_cmd": "params_dump"}
+    resp = handle_echo_cmd({"echo_cmd": req["echo_cmd"]}, params, False, TEST_WHITELIST)
     assert resp["exitStatus"] == -1
     assert "disabled by user switch" in resp["error"]
 
   def test_echo_cmd_onroad_hard_lockout(self):
     """断言 2: 即便车主开启了开关，只要在行车中 (is_onroad=True)，必须触发行车硬锁死 (423)"""
     params = MockParams({"CarrotEchoCmdEnable": 1})
-    req = {"echo_cmd": "echo 'should_be_locked'"}
-    resp = handle_echo_cmd_logic(req, params, is_onroad=True)
+    req = {"echo_cmd": "params_dump"}
+    resp = handle_echo_cmd({"echo_cmd": req["echo_cmd"]}, params, True, TEST_WHITELIST)
     assert resp["exitStatus"] == 423
     assert "locked during onroad driving" in resp["error"]
 
   def test_echo_cmd_allowed_offroad_when_enabled(self):
     """断言 3: 当且仅当开关开启且处于驻车/熄火 (is_onroad=False) 时，才执行命令"""
     params = MockParams({"CarrotEchoCmdEnable": 1})
-    req = {"echo_cmd": "echo 'safe_debug_success'"}
-    resp = handle_echo_cmd_logic(req, params, is_onroad=False)
+    req = {"echo_cmd": "params_dump"}
+    resp = handle_echo_cmd({"echo_cmd": req["echo_cmd"]}, params, False, TEST_WHITELIST)
     assert resp["exitStatus"] == 0
     assert "safe_debug_success" in resp["result"]
 
