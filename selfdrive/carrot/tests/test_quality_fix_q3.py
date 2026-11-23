@@ -23,7 +23,6 @@ import os
 import re
 import sys
 import types
-import unittest
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 
@@ -80,55 +79,53 @@ def _lead_subset(msg, keys):
   return {k: msg.get(k) for k in keys}
 
 
-class TestQ3Adapters(unittest.TestCase):
+class TestQ3Adapters:
   """Q-3: parse_lead / parse_car_state 适配器单元测试。"""
 
-  @classmethod
-  def setUpClass(cls):
-    cls.amap_navi = _load_fresh()
+  amap_navi = _load_fresh()
 
   def test_parse_lead_none(self):
     amap = self.amap_navi
     lead = amap.parse_lead(None)
-    self.assertFalse(lead.status)
-    self.assertIsNone(lead.d_rel)
-    self.assertIsNone(lead.v_lead)
-    self.assertIsNone(lead.v_rel)
-    self.assertIsNone(lead.a_rel)
+    assert not lead.status
+    assert lead.d_rel is None
+    assert lead.v_lead is None
+    assert lead.v_rel is None
+    assert lead.a_rel is None
 
   def test_parse_lead_status_false(self):
     """status=False 的 lead 应映射为 status=False（各字段仍按提供情况映射）。"""
     amap = self.amap_navi
     lead = amap.parse_lead(_Lead(status=False, dRel=40.0))
-    self.assertFalse(lead.status)
-    self.assertEqual(lead.d_rel, 40.0)
+    assert not lead.status
+    assert lead.d_rel == 40.0
 
   def test_parse_lead_full_fields(self):
     """全字段 lead：capnp camelCase → dataclass snake_case 逐字段映射正确。"""
     amap = self.amap_navi
     lead = amap.parse_lead(_Lead(status=True, dRel=40.0, vLead=8.0, vRel=-3.0, aRel=0.5))
-    self.assertTrue(lead.status)
-    self.assertEqual(lead.d_rel, 40.0)
-    self.assertEqual(lead.v_lead, 8.0)
-    self.assertEqual(lead.v_rel, -3.0)
-    self.assertEqual(lead.a_rel, 0.5)
+    assert lead.status
+    assert lead.d_rel == 40.0
+    assert lead.v_lead == 8.0
+    assert lead.v_rel == -3.0
+    assert lead.a_rel == 0.5
 
   def test_parse_lead_missing_field_is_none_not_zero(self):
     """缺字段 → None（而非 0.0），保留"字段缺席"信息供调用点跳键。"""
     amap = self.amap_navi
     lead = amap.parse_lead(_Lead(status=True, dRel=40.0))
-    self.assertEqual(lead.d_rel, 40.0)
-    self.assertIsNone(lead.v_lead, "未提供的 vLead 应为 None")
-    self.assertIsNone(lead.v_rel)
-    self.assertIsNone(lead.a_rel)
+    assert lead.d_rel == 40.0
+    assert lead.v_lead is None
+    assert lead.v_rel is None
+    assert lead.a_rel is None
 
   def test_parse_car_state_none(self):
     amap = self.amap_navi
     cs = amap.parse_car_state(None)
-    self.assertFalse(cs.cruise_present)
-    self.assertIsNone(cs.standstill)
-    self.assertIsNone(cs.v_ego)
-    self.assertIsNone(cs.cruise_enabled)
+    assert not cs.cruise_present
+    assert cs.standstill is None
+    assert cs.v_ego is None
+    assert cs.cruise_enabled is None
 
   def test_parse_car_state_full_fields(self):
     """全字段 carState（含嵌套 cruiseState）逐字段映射。"""
@@ -141,36 +138,34 @@ class TestQ3Adapters(unittest.TestCase):
                                     steeringAngleDeg=3.3, steeringTorqueEps=-2.0,
                                     gasPressed=True, brakePressed=False,
                                     cruiseState=_Cruise(), leftBlindspot=1, rightBlindspot=0))
-    self.assertIs(cs.standstill, True)
-    self.assertEqual(cs.v_ego_cluster, 15.4)
-    self.assertEqual(cs.v_cruise, 60)
-    self.assertEqual(cs.v_ego, 12.5)
-    self.assertEqual(cs.a_ego, 1.1)
-    self.assertEqual(cs.steering_angle_deg, 3.3)
-    self.assertEqual(cs.steering_torque_eps, -2.0)
-    self.assertIs(cs.gas_pressed, True)
-    self.assertIs(cs.brake_pressed, False)
-    self.assertTrue(cs.cruise_present)
-    self.assertIs(cs.cruise_enabled, True)
-    self.assertIs(cs.cruise_available, False)
-    self.assertEqual(cs.left_blindspot, 1)
-    self.assertEqual(cs.right_blindspot, 0)
+    assert cs.standstill is True
+    assert cs.v_ego_cluster == 15.4
+    assert cs.v_cruise == 60
+    assert cs.v_ego == 12.5
+    assert cs.a_ego == 1.1
+    assert cs.steering_angle_deg == 3.3
+    assert cs.steering_torque_eps == -2.0
+    assert cs.gas_pressed is True
+    assert cs.brake_pressed is False
+    assert cs.cruise_present
+    assert cs.cruise_enabled is True
+    assert cs.cruise_available is False
+    assert cs.left_blindspot == 1
+    assert cs.right_blindspot == 0
 
   def test_parse_car_state_missing_cruise_state(self):
     """无 cruiseState 属性 → cruise_present=False、cruise_* 为 None（等价原 hasattr 门控）。"""
     amap = self.amap_navi
     cs = amap.parse_car_state(_Lead(vEgo=12.5))
-    self.assertFalse(cs.cruise_present)
-    self.assertIsNone(cs.cruise_enabled)
-    self.assertIsNone(cs.cruise_available)
+    assert not cs.cruise_present
+    assert cs.cruise_enabled is None
+    assert cs.cruise_available is None
 
 
-class TestQ3LeadGoldenValues(unittest.TestCase):
+class TestQ3LeadGoldenValues:
   """Q-3: lead 适配器改造后 make_navi_message / make_blinker_message 输出处逐字节不变。"""
 
-  @classmethod
-  def setUpClass(cls):
-    cls.amap_navi = _load_fresh()
+  amap_navi = _load_fresh()
 
   def _serv_with_radar(self, radar, disable_blindspot=False):
     sd = self.amap_navi.SharedData()
@@ -190,14 +185,14 @@ class TestQ3LeadGoldenValues(unittest.TestCase):
       _Lead(status=True, dRel=35.0, vLead=7.0, vRel=-2.0, aRel=0.3),
       _Lead(status=True, dRel=30.0, vLead=6.0, vRel=-1.0, aRel=0.2)))
     msg = json.loads(serv.make_navi_message())
-    self.assertEqual(_lead_subset(msg, sorted(_NAVI_A.keys())), _NAVI_A)
+    assert _lead_subset(msg, sorted(_NAVI_A.keys())) == _NAVI_A
 
   def test_blinker_lead_full_fields(self):
     """Case A：blinker 帧 leadOne 用 round1（非 int），输出与改造前一致。"""
     serv = self._serv_with_radar(_mk_radar(
       _Lead(status=True, dRel=40.0, vLead=8.0, vRel=-3.0, aRel=0.5)))
     msg = json.loads(serv.make_blinker_message())
-    self.assertEqual(_lead_subset(msg, sorted(_BLINKER_A.keys())), _BLINKER_A)
+    assert _lead_subset(msg, sorted(_BLINKER_A.keys())) == _BLINKER_A
 
   def test_navi_lead_partial_missing_fields(self):
     """Case B：leadOne 缺 aRel、leadLeft 缺 vRel、leadRight status=False → 键缺席行为不变。"""
@@ -206,22 +201,22 @@ class TestQ3LeadGoldenValues(unittest.TestCase):
       _Lead(status=True, dRel=40.0, vLead=8.0),
       _Lead(status=False, dRel=99)))
     msg = json.loads(serv.make_navi_message())
-    self.assertEqual(_lead_subset(msg, sorted(_NAVI_B.keys())), _NAVI_B)
+    assert _lead_subset(msg, sorted(_NAVI_B.keys())) == _NAVI_B
     # 缺失字段对应的键必须缺席
-    self.assertNotIn("lead_accel", msg, "leadOne 缺 aRel → lead_accel 键应缺席")
-    self.assertNotIn("l_vrel", msg, "leadLeft 缺 vRel → l_vrel 键应缺席")
+    assert "lead_accel" not in msg, "leadOne 缺 aRel → lead_accel 键应缺席"
+    assert "l_vrel" not in msg, "leadLeft 缺 vRel → l_vrel 键应缺席"
 
   def test_navi_lead_no_radar_attrs(self):
     """Case C：radarState 无 lead 属性 → 各 lead 标志 False。"""
     serv = self._serv_with_radar(_mk_radar(has_attrs=False))
     msg = json.loads(serv.make_navi_message())
-    self.assertEqual(_lead_subset(msg, sorted(_NAVI_C.keys())), _NAVI_C)
+    assert _lead_subset(msg, sorted(_NAVI_C.keys())) == _NAVI_C
 
   def test_navi_lead_none_objects(self):
     """Case D：lead 对象为 None → 各 lead 标志 False。"""
     serv = self._serv_with_radar(_mk_radar(None, None, None))
     msg = json.loads(serv.make_navi_message())
-    self.assertEqual(_lead_subset(msg, sorted(_NAVI_D.keys())), _NAVI_D)
+    assert _lead_subset(msg, sorted(_NAVI_D.keys())) == _NAVI_D
 
   def test_navi_disable_blindspot(self):
     """Case E：disableBlindSpot=True 时 l_lead/r_lead 恒 False（即使有 lead）。"""
@@ -231,16 +226,16 @@ class TestQ3LeadGoldenValues(unittest.TestCase):
       _Lead(status=True, dRel=30.0, vLead=6.0, vRel=-1.0)),
       disable_blindspot=True)
     msg = json.loads(serv.make_navi_message())
-    self.assertEqual(_lead_subset(msg, sorted(_NAVI_E.keys())), _NAVI_E)
-    self.assertNotIn("l_drel", msg, "disableBlindSpot → l_drel 键应缺席")
+    assert _lead_subset(msg, sorted(_NAVI_E.keys())) == _NAVI_E
+    assert "l_drel" not in msg, "disableBlindSpot → l_drel 键应缺席"
 
   def test_navi_lead_one_missing_drel_key_absent(self):
     """Case F：leadOne 缺 dRel（status=True）→ drel 键缺席（逐字节回归）。"""
     serv = self._serv_with_radar(_mk_radar(
       _Lead(status=True, vLead=8.0, vRel=-3.0, aRel=0.5)))
     msg = json.loads(serv.make_navi_message())
-    self.assertEqual(_lead_subset(msg, sorted(_NAVI_F.keys())), _NAVI_F)
-    self.assertNotIn("drel", msg, "leadOne 缺 dRel → drel 键应缺席")
+    assert _lead_subset(msg, sorted(_NAVI_F.keys())) == _NAVI_F
+    assert "drel" not in msg, "leadOne 缺 dRel → drel 键应缺席"
 
   def test_navi_lead_left_missing_vlead_key_absent(self):
     """Case G：leadLeft 缺 vLead → l_vlead 键缺席。"""
@@ -248,16 +243,14 @@ class TestQ3LeadGoldenValues(unittest.TestCase):
       _Lead(status=True, dRel=40.0, vLead=8.0, vRel=-3.0),
       _Lead(status=True, dRel=40.0, vRel=-3.0)))
     msg = json.loads(serv.make_navi_message())
-    self.assertEqual(_lead_subset(msg, sorted(_NAVI_G.keys())), _NAVI_G)
-    self.assertNotIn("l_vlead", msg, "leadLeft 缺 vLead → l_vlead 键应缺席")
+    assert _lead_subset(msg, sorted(_NAVI_G.keys())) == _NAVI_G
+    assert "l_vlead" not in msg, "leadLeft 缺 vLead → l_vlead 键应缺席"
 
 
-class TestQ3CarStateGoldenValues(unittest.TestCase):
+class TestQ3CarStateGoldenValues:
   """Q-3: carState 适配器改造后 update_navi_carstate 共享数据行为不变。"""
 
-  @classmethod
-  def setUpClass(cls):
-    cls.amap_navi = _load_fresh()
+  amap_navi = _load_fresh()
 
   def _run_cs(self, cs, v_ego_m=0.0):
     amap = self.amap_navi
@@ -288,55 +281,55 @@ class TestQ3CarStateGoldenValues(unittest.TestCase):
                             cruiseState=self._cruise(True, True),
                             leftBlindspot=1, rightBlindspot=0),
                       v_ego_m=5.0)
-    self.assertIs(sd.standstill, True)
-    self.assertEqual(sd.v_ego_kph, 55, "int(15.4*3.6+0.5)=55")
-    self.assertEqual(sd.v_cruise_kph, 60)
-    self.assertEqual(sd.v_ego_m, 12.5)
-    self.assertEqual(sd.vEgo, 45.0, "round1(12.5*3.6)=45.0")
-    self.assertEqual(sd.aEgo, 1.1)
-    self.assertEqual(sd.steer_angle, 3.3)
-    self.assertIs(sd.driver_steering, True, "torque=-2, angle=3.3 方向相反且 |torque|>0.5")
-    self.assertIs(sd.gas_press, True)
-    self.assertIs(sd.break_press, False)
-    self.assertIs(sd.engaged, True)
-    self.assertIs(sd.cruise_valid, True)
-    self.assertEqual(sd.left_blindspot, 1)
-    self.assertEqual(sd.right_blindspot, 0)
+    assert sd.standstill is True
+    assert sd.v_ego_kph == 55, "int(15.4*3.6+0.5)=55"
+    assert sd.v_cruise_kph == 60
+    assert sd.v_ego_m == 12.5
+    assert sd.vEgo == 45.0, "round1(12.5*3.6)=45.0"
+    assert sd.aEgo == 1.1
+    assert sd.steer_angle == 3.3
+    assert sd.driver_steering is True
+    assert sd.gas_press is True
+    assert sd.break_press is False
+    assert sd.engaged is True
+    assert sd.cruise_valid is True
+    assert sd.left_blindspot == 1
+    assert sd.right_blindspot == 0
 
   def test_standstill_absent_fallback_low_speed(self):
     """standstill 缺失 + v_ego_m<0.1 → standstill=True（else 分支行为不变）。"""
     sd = self._run_cs(_Lead(vEgo=12.5), v_ego_m=0.05)
-    self.assertIs(sd.standstill, True)
+    assert sd.standstill is True
 
   def test_standstill_absent_fallback_high_speed(self):
     """standstill 缺失 + v_ego_m>=0.1 → standstill=False。"""
     sd = self._run_cs(_Lead(vEgo=12.5), v_ego_m=5.0)
-    self.assertIs(sd.standstill, False)
+    assert sd.standstill is False
 
   def test_torque_absent_driver_steering_false(self):
     """steeringTorqueEps 缺失 → driver_steering=False（原 hasattr 双字段门控）。"""
     sd = self._run_cs(_Lead(vEgo=12.5))
-    self.assertIs(sd.driver_steering, False)
+    assert sd.driver_steering is False
 
   def test_cruise_absent_fields_stay_none(self):
     """cruiseState 缺失 → engaged/cruise_valid/cruise_enable 保持 None（等价原 hasattr 门控）。"""
     sd = self._run_cs(_Lead(vEgo=12.5))
-    self.assertIsNone(sd.engaged)
-    self.assertIsNone(sd.cruise_valid)
-    self.assertIsNone(sd.cruise_enable)
+    assert sd.engaged is None
+    assert sd.cruise_valid is None
+    assert sd.cruise_enable is None
 
   def test_missing_fields_stay_none(self):
     """缺字段的共享数据保持默认 None（等价原 hasattr 缺失分支跳过）。"""
     sd = self._run_cs(_Lead(vEgo=12.5))
-    self.assertIsNone(sd.aEgo)
-    self.assertIsNone(sd.steer_angle)
-    self.assertIsNone(sd.gas_press)
-    self.assertIsNone(sd.break_press)
-    self.assertIsNone(sd.left_blindspot)
-    self.assertIsNone(sd.right_blindspot)
+    assert sd.aEgo is None
+    assert sd.steer_angle is None
+    assert sd.gas_press is None
+    assert sd.break_press is None
+    assert sd.left_blindspot is None
+    assert sd.right_blindspot is None
 
 
-class TestQ3HasattrConvergence(unittest.TestCase):
+class TestQ3HasattrConvergence:
   """Q-3: hasattr 防御调用较改造前收敛（静态检查）。"""
 
   def test_hasattr_call_sites_decreased(self):
@@ -345,18 +338,16 @@ class TestQ3HasattrConvergence(unittest.TestCase):
       src = f.read()
     # 只统计真实调用（行首或表达式内），排除注释/docstring 里的 hasattr 字样
     call_sites = len(re.findall(r"(?m)^[^#]*hasattr\(", src))
-    self.assertLessEqual(call_sites, 9,
-                        f"Q-3: hasattr( 调用点应收敛至 ≤9（实际 {call_sites}）")
-    self.assertGreater(9, call_sites,
-                       "Q-3: hasattr( 调用点应实际下降（改造前 39 处）")
+    assert call_sites <= 9, f"Q-3: hasattr( 调用点应收敛至 ≤9（实际 {call_sites}）"
+    assert 9 > call_sites, "Q-3: hasattr( 调用点应实际下降（改造前 39 处）"
 
   def test_adapters_defined(self):
     """适配层 dataclass + parse 函数存在（hasattr 收敛目标）。"""
     amap = _load_fresh()
-    self.assertTrue(hasattr(amap, "LeadState"))
-    self.assertTrue(hasattr(amap, "parse_lead"))
-    self.assertTrue(hasattr(amap, "CarStateData"))
-    self.assertTrue(hasattr(amap, "parse_car_state"))
+    assert hasattr(amap, "LeadState")
+    assert hasattr(amap, "parse_lead")
+    assert hasattr(amap, "CarStateData")
+    assert hasattr(amap, "parse_car_state")
 
 
 if __name__ == "__main__":

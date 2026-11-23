@@ -6,7 +6,6 @@ Verifies:
 2. SPEED_LIMIT command parses integer speed (0~160) and updates nRoadLimitSpeed.
 3. Invalid SPEED_LIMIT args (non-numeric, negative, >160) are blocked without fail-open.
 """
-import unittest
 
 class MockLaneChangeState:
     off = 0
@@ -49,28 +48,28 @@ class MockCarrotServ:
             self.nRoadLimitSpeed = speed_kph
             self.nRoadLimitSpeed_last = speed_kph
 
-class TestCooperativeCommandHandlers(unittest.TestCase):
+class TestCooperativeCommandHandlers:
 
     def test_cancel_command_aborts_active_lane_change(self):
         dh = MockDesireHelper()
-        self.assertEqual(dh.lane_change_state, MockLaneChangeState.laneChangeStarting)
+        assert dh.lane_change_state == MockLaneChangeState.laneChangeStarting
 
         dh.handle_carrot_cmd(carrot_cmd="CANCEL", carrot_arg="KEEP", cmd_index=1)
 
-        self.assertEqual(dh.lane_change_state, MockLaneChangeState.off)
-        self.assertEqual(dh.carrot_lane_change_count, 0)
-        self.assertEqual(dh.trigger_name, "cancel cmd")
-        self.assertIn(4, dh.audio_played)
+        assert dh.lane_change_state == MockLaneChangeState.off
+        assert dh.carrot_lane_change_count == 0
+        assert dh.trigger_name == "cancel cmd"
+        assert 4 in dh.audio_played
 
     def test_speed_limit_command_valid_update(self):
         serv = MockCarrotServ()
-        self.assertEqual(serv.nRoadLimitSpeed, 0)
+        assert serv.nRoadLimitSpeed == 0
 
         serv.command_handlers["SPEED_LIMIT"]("100")
-        self.assertEqual(serv.nRoadLimitSpeed, 100)
+        assert serv.nRoadLimitSpeed == 100
 
         serv.command_handlers["SPEED_LIMIT"]("120")
-        self.assertEqual(serv.nRoadLimitSpeed, 120)
+        assert serv.nRoadLimitSpeed == 120
 
     def test_speed_limit_invalid_argument_blocked(self):
         serv = MockCarrotServ()
@@ -78,15 +77,15 @@ class TestCooperativeCommandHandlers(unittest.TestCase):
 
         # Non-numeric
         serv.command_handlers["SPEED_LIMIT"]("invalid")
-        self.assertEqual(serv.nRoadLimitSpeed, 80)
+        assert serv.nRoadLimitSpeed == 80
 
         # Out of bounds (> 160)
         serv.command_handlers["SPEED_LIMIT"]("200")
-        self.assertEqual(serv.nRoadLimitSpeed, 80)
+        assert serv.nRoadLimitSpeed == 80
 
         # Negative (< 0)
         serv.command_handlers["SPEED_LIMIT"]("-10")
-        self.assertEqual(serv.nRoadLimitSpeed, 80)
+        assert serv.nRoadLimitSpeed == 80
 
 if __name__ == "__main__":
     unittest.main()

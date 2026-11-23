@@ -7,7 +7,6 @@ Verifies:
 3. _clean_clients_thread loop executes without throwing AttributeError or KeyError.
 """
 import time
-import unittest
 
 class MockAmapNaviServCleanClients:
     def __init__(self):
@@ -27,14 +26,14 @@ class MockAmapNaviServCleanClients:
         self.ext_state = len(self.clients) + (1 if self.lane_online else 0)
         return len(active_clients)
 
-class TestAmapNaviNetworking(unittest.TestCase):
+class TestAmapNaviNetworking:
 
     def test_clean_clients_iteration_no_clients(self):
         """Verify _clean_clients_thread logic executes cleanly when no clients are present"""
         serv = MockAmapNaviServCleanClients()
         active_count = serv.clean_clients_iteration(time.time())
-        self.assertEqual(active_count, 0)
-        self.assertEqual(serv.ext_state, 0)
+        assert active_count == 0
+        assert serv.ext_state == 0
 
     def test_clean_clients_timeout_and_eviction(self):
         """Verify stale clients (>1.0s) are evicted and client_active marked False without error"""
@@ -44,9 +43,9 @@ class TestAmapNaviNetworking(unittest.TestCase):
         serv.client_active["192.168.3.165"] = True
 
         active_count = serv.clean_clients_iteration(now)
-        self.assertEqual(active_count, 0, "Stale client must be evicted!")
-        self.assertFalse(serv.client_active["192.168.3.165"], "Stale client must be marked inactive!")
-        self.assertNotIn("192.168.3.165", serv.clients)
+        assert active_count == 0, "Stale client must be evicted!"
+        assert not serv.client_active["192.168.3.165"], "Stale client must be marked inactive!"
+        assert "192.168.3.165" not in serv.clients
 
 if __name__ == "__main__":
     unittest.main()

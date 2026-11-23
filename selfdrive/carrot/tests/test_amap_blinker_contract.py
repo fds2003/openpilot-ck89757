@@ -11,7 +11,6 @@ C3 必须两种都接受，且未知值 fail-closed 归零。
 import importlib.util
 import sys
 import types
-import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -73,7 +72,7 @@ def _make_serv():
   return serv
 
 
-class TestBlinkerContract(unittest.TestCase):
+class TestBlinkerContract:
 
   def _update(self, serv, payload, now=100.0):
     serv._update_blinker(payload, "192.168.3.165", {}, now)
@@ -84,15 +83,15 @@ class TestBlinkerContract(unittest.TestCase):
     for code, expected in cases:
       serv = _make_serv()
       self._update(serv, {"blinker": code})
-      self.assertEqual(expected, serv.shared_data.ext_blinker, f"blinker={code}")
-      self.assertTrue(serv.blinker_alive)
-      self.assertEqual(100.0, serv.blinker_time)
+      assert expected == serv.shared_data.ext_blinker, f"blinker={code}"
+      assert serv.blinker_alive
+      assert 100.0 == serv.blinker_time
 
   def test_numeric_string_codes_supported(self):
     for raw, expected in (("1", amap_navi.BLINKER_LEFT), ("2", amap_navi.BLINKER_RIGHT)):
       serv = _make_serv()
       self._update(serv, {"blinker": raw})
-      self.assertEqual(expected, serv.shared_data.ext_blinker, f"blinker={raw!r}")
+      assert expected == serv.shared_data.ext_blinker, f"blinker={raw!r}"
 
   def test_legacy_string_protocol_supported(self):
     cases = (
@@ -104,7 +103,7 @@ class TestBlinkerContract(unittest.TestCase):
     for raw, expected in cases:
       serv = _make_serv()
       self._update(serv, {"blinker": raw})
-      self.assertEqual(expected, serv.shared_data.ext_blinker, f"blinker={raw!r}")
+      assert expected == serv.shared_data.ext_blinker, f"blinker={raw!r}"
 
   def test_unknown_value_fails_closed(self):
     """未知值必须归零，避免误以为打了转向灯"""
@@ -112,7 +111,7 @@ class TestBlinkerContract(unittest.TestCase):
       serv = _make_serv()
       serv.shared_data.ext_blinker = amap_navi.BLINKER_LEFT
       self._update(serv, {"blinker": raw})
-      self.assertEqual(amap_navi.BLINKER_NONE, serv.shared_data.ext_blinker, f"blinker={raw!r}")
+      assert amap_navi.BLINKER_NONE == serv.shared_data.ext_blinker, f"blinker={raw!r}"
 
   def test_missing_key_keeps_previous_state(self):
     """未携带 blinker 的包不得改动转向灯，也不得刷新存活时间"""
@@ -121,9 +120,9 @@ class TestBlinkerContract(unittest.TestCase):
     serv.blinker_alive = True
     serv.blinker_time = 50.0
     self._update(serv, {"cmd": "LANE_CHANGE"}, now=100.0)
-    self.assertEqual(amap_navi.BLINKER_RIGHT, serv.shared_data.ext_blinker)
-    self.assertTrue(serv.blinker_alive)
-    self.assertEqual(50.0, serv.blinker_time)
+    assert amap_navi.BLINKER_RIGHT == serv.shared_data.ext_blinker
+    assert serv.blinker_alive
+    assert 50.0 == serv.blinker_time
 
 
 if __name__ == "__main__":

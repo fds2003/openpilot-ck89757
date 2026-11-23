@@ -2,7 +2,6 @@
 """TDD: lane_runner 运行时前置条件检查与依赖声明契约。"""
 import os
 import tempfile
-import unittest
 from unittest import mock
 
 from selfdrive.carrot import lane_runtime
@@ -15,19 +14,19 @@ def read(rel):
         return f.read()
 
 
-class TestCheckRuntime(unittest.TestCase):
+class TestCheckRuntime:
 
     def test_missing_onnxruntime(self):
         with mock.patch.object(lane_runtime.importlib.util, "find_spec", return_value=None):
             ok, msg = lane_runtime.check_runtime("/nonexistent/lane.onnx")
-        self.assertFalse(ok)
-        self.assertIn("onnxruntime", msg)
+        assert not ok
+        assert "onnxruntime" in msg
 
     def test_missing_model(self):
         with mock.patch.object(lane_runtime.importlib.util, "find_spec", return_value=object()):
             ok, msg = lane_runtime.check_runtime("/nonexistent/lane.onnx")
-        self.assertFalse(ok)
-        self.assertIn("/nonexistent/lane.onnx", msg)
+        assert not ok
+        assert "/nonexistent/lane.onnx" in msg
 
     def test_ready(self):
         fd, path = tempfile.mkstemp()
@@ -35,22 +34,22 @@ class TestCheckRuntime(unittest.TestCase):
         try:
             with mock.patch.object(lane_runtime.importlib.util, "find_spec", return_value=object()):
                 ok, msg = lane_runtime.check_runtime(path)
-            self.assertTrue(ok)
-            self.assertEqual(msg, "")
+            assert ok
+            assert msg == ""
         finally:
             os.remove(path)
 
 
-class TestDependencyContract(unittest.TestCase):
+class TestDependencyContract:
 
     def test_lane_requirements_declares_onnxruntime(self):
         # 不写入 pyproject/uv.lock：避免镜像源改写全局锁文件；C3 用独立 requirements 安装
         text = read("selfdrive/carrot/requirements_lane.txt")
-        self.assertIn("onnxruntime", text)
+        assert "onnxruntime" in text
 
     def test_process_config_includes_lane_runner(self):
         text = read("system/manager/process_config.py")
-        self.assertIn('PythonProcess("lane_runner", "selfdrive.carrot.lane_runner"', text)
+        assert 'PythonProcess("lane_runner", "selfdrive.carrot.lane_runner"' in text
 
 
 if __name__ == "__main__":

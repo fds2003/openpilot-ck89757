@@ -9,6 +9,7 @@ GREEN 阶段：Q-5（deque 化）、Q-6（fields 裁剪）、Q-4（TURN_TYPE_MAP
 仅依赖标准库 + cereal/opencv stub（carrot_serv 离线导入需要），
 不启动服务、不联网、不读 Params。
 """
+import pytest
 import collections
 import importlib.util
 import os
@@ -16,7 +17,6 @@ import socket
 import sys
 import threading
 import types
-import unittest
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 AMAP_NAVI = os.path.join(ROOT, "selfdrive", "carrot", "amap_navi.py")
@@ -222,47 +222,43 @@ def _mk_serv(shared_data):
   return serv
 
 
-class TestQ5SpeedHistDeque(unittest.TestCase):
+class TestQ5SpeedHistDeque:
   """Q-5: speed_hist 改 deque(maxlen)，消灭 20~50Hz 路径 O(n) pop(0)。"""
 
-  @classmethod
-  def setUpClass(cls):
-    _install_stubs()
-    cls.amap_navi = _load_module("amap_navi_q5", AMAP_NAVI)
+  _install_stubs()
+  amap_navi = _load_module("amap_navi_q5", AMAP_NAVI)
 
   def test_speed_hist_is_bounded_deque(self):
     est = self.amap_navi.RadarSpeedEstimator(smooth_n=5)
     for i in range(100):
       est.update(1000.0 * (i + 1), i * 50)  # 匀速 10 m/s
     hist = est.speed_hist
-    self.assertIsInstance(hist, collections.deque, msg="Q-5 RED: speed_hist 应为 collections.deque")
-    self.assertEqual(len(hist), 5, msg="Q-5 RED: deque(maxlen=5) 应恒保持 5 元素")
-    self.assertEqual(hist.maxlen, 5)
+    assert isinstance(hist, collections.deque)
+    assert len(hist) == 5
+    assert hist.maxlen == 5
 
   def test_sliding_average_matches(self):
     est = self.amap_navi.RadarSpeedEstimator(smooth_n=5)
     for i in range(50):
       est.update(1000.0 * (i + 1), i * 50)
     avg = sum(est.speed_hist) / len(est.speed_hist)
-    self.assertAlmostEqual(avg, 10.0, delta=1.0, msg="匀速 10 m/s 时滑动平均应趋近 10")
+    assert abs(avg - 10.0) <= 1.0, "匀速 10 m/s 时滑动平均应趋近 10"
 
   def test_lost_timeout_reset_clears_history(self):
     est = self.amap_navi.RadarSpeedEstimator(smooth_n=3, lost_timeout_ms=500)
     est.update(1000.0, 0)
     est.update(2000.0, 100)
-    self.assertIsNotNone(est.update(5000.0, 200))
+    assert est.update(5000.0, 200) is not None
     r = est.update(None, 20000)  # 超 500ms 丢帧
-    self.assertIsNone(r, "丢帧超时后应返回 None")
-    self.assertEqual(len(est.speed_hist), 0, "丢帧超时后 history 应被清空")
+    assert r is None
+    assert len(est.speed_hist) == 0, "丢帧超时后 history 应被清空"
 
 
-class TestQ6LbRbDrelOwnership(unittest.TestCase):
+class TestQ6LbRbDrelOwnership:
   """Q-6: lb_drel/rb_drel 广播 key 只由 main_*_drel 决定，fields 循环不再参与。"""
 
-  @classmethod
-  def setUpClass(cls):
-    _install_stubs()
-    cls.amap_navi = _load_module("amap_navi_q6", AMAP_NAVI)
+  _install_stubs()
+  amap_navi = _load_module("amap_navi_q6", AMAP_NAVI)
 
   def _sd(self, main_lb=None, main_rb=None, lb0=None, rb0=None):
     sd = self.amap_navi.SharedData()
@@ -288,53 +284,50 @@ class TestQ6LbRbDrelOwnership(unittest.TestCase):
     import json
     serv = _mk_serv(self._sd(main_lb=None, main_rb=None, lb0=-1234, rb0=4321))
     msg = json.loads(serv.make_navi_message())
-    self.assertNotIn("lb_drel", msg, "Q-6 RED: 无主雷达数据时 lb_drel 不应由 fields 循环写入")
-    self.assertNotIn("rb_drel", msg, "Q-6 RED: 无主雷达数据时 rb_drel 不应由 fields 循环写入")
+    assert "lb_drel" not in msg, "Q-6 RED: 无主雷达数据时 lb_drel 不应由 fields 循环写入"
+    assert "rb_drel" not in msg, "Q-6 RED: 无主雷达数据时 rb_drel 不应由 fields 循环写入"
 
   def test_main_value_overrides_and_unit_is_meters(self):
     import json
     serv = _mk_serv(self._sd(main_lb=-5000, main_rb=5000, lb0=-1234, rb0=4321))
     msg = json.loads(serv.make_navi_message())
-    self.assertEqual(msg.get("lb_drel"), 5.0, "main_lb_drel(mm) 应取绝对值转米")
-    self.assertEqual(msg.get("rb_drel"), 5.0, "main_rb_drel(mm) 应取绝对值转米")
+    assert msg.get("lb_drel") == 5.0, "main_lb_drel(mm) 应取绝对值转米"
+    assert msg.get("rb_drel") == 5.0, "main_rb_drel(mm) 应取绝对值转米"
 
   def test_lf_rb_keys_still_broadcast(self):
     import json
     serv = _mk_serv(self._sd())
     msg = json.loads(serv.make_navi_message())
-    self.assertEqual(msg.get("lf_drel"), 5000, "lf_drel idx0 仍应由 fields 循环广播")
+    assert msg.get("lf_drel") == 5000, "lf_drel idx0 仍应由 fields 循环广播"
 
 
-class TestQ4TurnTypeMapSingleSource(unittest.TestCase):
+class TestQ4TurnTypeMapSingleSource:
   """Q-4: 两份 nav_type_mapping 合并为单一 TURN_TYPE_MAP。"""
 
-  @classmethod
-  def setUpClass(cls):
-    _install_stubs()
-    cls.carrot_serv = _load_module("carrot_serv_q4", CARROT_SERV)
+  _install_stubs()
+  carrot_serv = _load_module("carrot_serv_q4", CARROT_SERV)
 
   def test_single_module_level_mapping(self):
-    self.assertTrue(hasattr(self.carrot_serv, "TURN_TYPE_MAP"), "Q-4 RED: 应存在模块级 TURN_TYPE_MAP")
-    self.assertEqual(len(self.carrot_serv.TURN_TYPE_MAP), 53, "键集合不变（并集 53 个）")
+    assert hasattr(self.carrot_serv, "TURN_TYPE_MAP"), "Q-4 RED: 应存在模块级 TURN_TYPE_MAP"
+    assert len(self.carrot_serv.TURN_TYPE_MAP) == 53, "键集合不变（并集 53 个）"
 
   def test_conflicting_keys_resolved(self):
     m = self.carrot_serv.TURN_TYPE_MAP
     # 14/201 取 _update_tbt 原值（顶层旧值 5/None 为死值）
-    self.assertEqual(m[14][2], 7, "uturn xTurnInfo 应为 7")
-    self.assertEqual(m[201][2], 8, "arrive xTurnInfo 应为 8")
+    assert m[14][2] == 7, "uturn xTurnInfo 应为 7"
+    assert m[201][2] == 8, "arrive xTurnInfo 应为 8"
     # 51-55 取顶层 None（0 在 >0 判断下等效，None 保持 update_nav_instruction 原行为）
     for k in (51, 52, 53, 54, 55):
-      self.assertIsNone(m[k][2], f"notification {k} xTurnInfo 应保持 None")
+      assert m[k][2] is None
 
   def test_no_local_mapping_in_update_tbt(self):
     src = open(CARROT_SERV, encoding="utf-8").read()
-    self.assertNotIn("turn_type_mapping = {", src, "Q-4 RED: _update_tbt 内局部字典应已删除")
-    self.assertIn("TURN_TYPE_MAP", src)
+    assert "turn_type_mapping = {" not in src, "Q-4 RED: _update_tbt 内局部字典应已删除"
+    assert "TURN_TYPE_MAP" in src
 
   def test_no_stale_top_level_name(self):
     src = open(CARROT_SERV, encoding="utf-8").read()
-    self.assertNotIn("nav_type_mapping", src.replace("原顶层 nav_type_mapping 与", ""),
-                     "Q-4 RED: 顶层 nav_type_mapping 应重命名为 TURN_TYPE_MAP")
+    assert "nav_type_mapping" not in src.replace("原顶层 nav_type_mapping 与", ""), "Q-4 RED: 顶层 nav_type_mapping 应重命名为 TURN_TYPE_MAP"
 
   def test_update_tbt_uses_shared_map(self):
     serv = object.__new__(self.carrot_serv.CarrotServ)
@@ -345,8 +338,8 @@ class TestQ4TurnTypeMapSingleSource(unittest.TestCase):
     serv.xDistToTurnNavLast = 0
     serv.xDistToTurnMaxCnt = 0
     self.carrot_serv.CarrotServ._update_tbt(serv)
-    self.assertEqual(serv.xTurnInfo, 7, "14 -> uturn xTurnInfo 7")
-    self.assertEqual(serv.xTurnInfoNext, 8, "201 -> arrive xTurnInfo 8")
+    assert serv.xTurnInfo == 7, "14 -> uturn xTurnInfo 7"
+    assert serv.xTurnInfoNext == 8, "201 -> arrive xTurnInfo 8"
 
 
 if __name__ == "__main__":

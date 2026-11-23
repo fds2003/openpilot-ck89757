@@ -14,7 +14,6 @@ Verifies selfdrive/controls/lib/rear_gate.py:
      TTC 不足 一律中止
 3. 三档 OVERTAKE 阈值（1.8/2.5/3.5），非法档位回退标准档。
 """
-import unittest
 
 from openpilot.selfdrive.controls.lib.rear_gate import (
   evaluate_lane_change_abort,
@@ -22,69 +21,69 @@ from openpilot.selfdrive.controls.lib.rear_gate import (
 )
 
 
-class TestIsDriverInitiated(unittest.TestCase):
+class TestIsDriverInitiated:
 
   # P0-2 核心：远程 cmd 不是驾驶员手动变道
   def test_remote_cmd_is_not_driver_initiated(self):
-    self.assertFalse(is_driver_initiated_change(3, "cmd"))
+    assert not is_driver_initiated_change(3, "cmd")
 
   def test_driver_paths_are_driver_initiated(self):
-    self.assertTrue(is_driver_initiated_change(3, "driver"))
-    self.assertTrue(is_driver_initiated_change(1, "torque bsd"))
-    self.assertTrue(is_driver_initiated_change(2, "torque ok"))
+    assert is_driver_initiated_change(3, "driver")
+    assert is_driver_initiated_change(1, "torque bsd")
+    assert is_driver_initiated_change(2, "torque ok")
 
   def test_auto_paths_are_not_driver_initiated(self):
-    self.assertFalse(is_driver_initiated_change(4, "torque auto"))
-    self.assertFalse(is_driver_initiated_change(7, "timeout"))
+    assert not is_driver_initiated_change(4, "torque auto")
+    assert not is_driver_initiated_change(7, "timeout")
 
 
-class TestLaneChangeAbort(unittest.TestCase):
+class TestLaneChangeAbort:
 
   # ---- 驾驶员手动变道：宽松（传感器失效不阻断） ----
   def test_driver_not_aborted_on_sensor_failure(self):
-    self.assertFalse(evaluate_lane_change_abort(True, False, 0.0, 1))
-    self.assertFalse(evaluate_lane_change_abort(True, True, 0.0, 1))
+    assert not evaluate_lane_change_abort(True, False, 0.0, 1)
+    assert not evaluate_lane_change_abort(True, True, 0.0, 1)
 
   def test_driver_not_aborted_on_clear_lane(self):
-    self.assertFalse(evaluate_lane_change_abort(True, True, 99.0, 1))
+    assert not evaluate_lane_change_abort(True, True, 99.0, 1)
 
   def test_driver_aborted_on_confirmed_fast_rear_car(self):
-    self.assertTrue(evaluate_lane_change_abort(True, True, 1.0, 1))
+    assert evaluate_lane_change_abort(True, True, 1.0, 1)
 
   # ---- 车机指令/自动变道（含远程 cmd）：fail-safe 严格 ----
   def test_cmd_aborted_on_missing_message(self):
     # P0-2 修复前：cmd 被误判为驾驶员路径，amapNavi 死亡反而不中止
-    self.assertTrue(evaluate_lane_change_abort(False, False, 99.0, 1))
+    assert evaluate_lane_change_abort(False, False, 99.0, 1)
 
   def test_cmd_aborted_on_invalid_ttc(self):
     # ttc=0.0 视为未确认清空 → 中止
-    self.assertTrue(evaluate_lane_change_abort(False, True, 0.0, 1))
-    self.assertTrue(evaluate_lane_change_abort(False, True, -1.0, 1))
+    assert evaluate_lane_change_abort(False, True, 0.0, 1)
+    assert evaluate_lane_change_abort(False, True, -1.0, 1)
 
   def test_cmd_aborted_on_fast_rear_car(self):
-    self.assertTrue(evaluate_lane_change_abort(False, True, 1.0, 1))
+    assert evaluate_lane_change_abort(False, True, 1.0, 1)
 
   def test_auto_permitted_on_clear_lane(self):
-    self.assertFalse(evaluate_lane_change_abort(False, True, 99.0, 1))
+    assert not evaluate_lane_change_abort(False, True, 99.0, 1)
 
   # ---- 三档阈值与边界 ----
   def test_threshold_boundary_is_permit(self):
     # TTC 恰好等于阈值：不算冲突
-    self.assertFalse(evaluate_lane_change_abort(False, True, 2.5, 1))
+    assert not evaluate_lane_change_abort(False, True, 2.5, 1)
 
   def test_three_level_thresholds(self):
     # 驾驶员路径：TTC=2.0，Aggressive(1.8) 放行 / Normal(2.5) 中止
-    self.assertFalse(evaluate_lane_change_abort(True, True, 2.0, 0))
-    self.assertTrue(evaluate_lane_change_abort(True, True, 2.0, 1))
+    assert not evaluate_lane_change_abort(True, True, 2.0, 0)
+    assert evaluate_lane_change_abort(True, True, 2.0, 1)
     # 自动路径：TTC=3.0，Normal(2.5) 放行 / Safe(3.5) 中止
-    self.assertFalse(evaluate_lane_change_abort(False, True, 3.0, 1))
-    self.assertTrue(evaluate_lane_change_abort(False, True, 3.0, 2))
+    assert not evaluate_lane_change_abort(False, True, 3.0, 1)
+    assert evaluate_lane_change_abort(False, True, 3.0, 2)
 
   def test_invalid_overtake_mode_falls_back_to_normal(self):
-    self.assertTrue(evaluate_lane_change_abort(False, True, 2.0, 7))
+    assert evaluate_lane_change_abort(False, True, 2.0, 7)
 
 
-class TestAbortNeverSeenFallback(unittest.TestCase):
+class TestAbortNeverSeenFallback:
   """P0-4: 后向传感器从未上线 → 执行段复检同步回退，与触发段一致。
 
   否则触发段放行、执行段立刻中止（ttc=0.0），自动变道自相矛盾地永远无法完成。
@@ -92,26 +91,25 @@ class TestAbortNeverSeenFallback(unittest.TestCase):
 
   def test_auto_not_aborted_when_never_seen(self):
     # 自动发起 + 传感器从未上线 + TTC 失效哨兵：不中止（回退 BSD 门控）
-    self.assertFalse(evaluate_lane_change_abort(False, True, 0.0, 1, rear_sensor_seen=False))
+    assert not evaluate_lane_change_abort(False, True, 0.0, 1, rear_sensor_seen=False)
 
   def test_cmd_not_aborted_when_never_seen(self):
     # 远程 cmd 同样回退（P0-2 的 fail-safe 仅适用于"曾上线后失效"场景）
-    self.assertFalse(evaluate_lane_change_abort(False, False, 99.0, 1, rear_sensor_seen=False))
+    assert not evaluate_lane_change_abort(False, False, 99.0, 1, rear_sensor_seen=False)
 
   def test_seen_then_failed_keeps_failsafe_abort(self):
     # 曾上线后失效：自动/cmd 路径依旧 fail-safe 中止
-    self.assertTrue(evaluate_lane_change_abort(False, True, 0.0, 1, rear_sensor_seen=True))
-    self.assertTrue(evaluate_lane_change_abort(False, False, 99.0, 1, rear_sensor_seen=True))
+    assert evaluate_lane_change_abort(False, True, 0.0, 1, rear_sensor_seen=True)
+    assert evaluate_lane_change_abort(False, False, 99.0, 1, rear_sensor_seen=True)
 
   def test_confirmed_fast_rear_car_always_aborts(self):
     for seen in (True, False):
-      with self.subTest(seen=seen):
-        self.assertTrue(evaluate_lane_change_abort(False, True, 1.0, 1, rear_sensor_seen=seen))
+      assert evaluate_lane_change_abort(False, True, 1.0, 1, rear_sensor_seen=seen)
 
   def test_driver_path_unaffected_by_seen_flag(self):
     # 驾驶员路径始终宽松：传感器失效/未上线不阻断
-    self.assertFalse(evaluate_lane_change_abort(True, True, 0.0, 1, rear_sensor_seen=False))
-    self.assertFalse(evaluate_lane_change_abort(True, False, 0.0, 1, rear_sensor_seen=True))
+    assert not evaluate_lane_change_abort(True, True, 0.0, 1, rear_sensor_seen=False)
+    assert not evaluate_lane_change_abort(True, False, 0.0, 1, rear_sensor_seen=True)
 
 
 if __name__ == "__main__":

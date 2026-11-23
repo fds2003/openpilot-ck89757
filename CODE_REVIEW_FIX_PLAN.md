@@ -34,7 +34,7 @@
   - 修复：amapNavi 超时/从未见后向传感器 → 回退 BSD 门控，而非永久阻塞。
   - 落地：`rear_gate.evaluate_rear_gate / evaluate_lane_change_abort` 新增 `rear_sensor_seen` 参数——传感器**从未上线**（desire_helper 以 `amapNavi.leftDevice/rightDevice` bit0 锁存）→ 回退 BSD 门控（放行不播报，方向防护由 evaluate_bsm_gate 承担）；**曾上线后失效** → 保持 fail-safe 阻断+播报；`RearRadarEnable=0`（未装雷达）行为不变。触发段与执行段（laneChangeStarting）语义一致，消除"触发放行、执行中止"矛盾。
 
-- [ ] **P0-5 (Standards) 15 个测试文件 `import unittest` + 自建 runner（TID251 红线）**
+- [x] **P0-5 (Standards) 15 个测试文件 `import unittest` + 自建 runner（TID251 红线）**（已修复：41 文件全量迁移 pytest，runner 已删除）
   - 位置：`selfdrive/carrot/tests/`（15 文件）、`run_all_tdd_tests.py`
   - 标准：AGENTS.md "Use pytest for all test execution"；`pyproject.toml` TID251。
   - 修复：改为 pytest 风格（`def test_*` + 断言），删除自建 runner，统一 `pytest` 入口。

@@ -28,7 +28,6 @@ import os
 import sys
 import threading
 import time
-import unittest
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 
@@ -45,12 +44,10 @@ def _load_fresh():
   return _load_module("amap_navi_q1", AMAP_NAVI)
 
 
-class TestQ1GoldenValues(unittest.TestCase):
+class TestQ1GoldenValues:
   """Q-1: 快照化后广播帧黄金值回归（单线程确定性，防快照化改变输出）。"""
 
-  @classmethod
-  def setUpClass(cls):
-    cls.amap_navi = _load_fresh()
+  amap_navi = _load_fresh()
 
   def _mk(self, **sd_kw):
     amap = self.amap_navi
@@ -78,40 +75,40 @@ class TestQ1GoldenValues(unittest.TestCase):
       cruise_valid=True, selfdrive_active=True,
     )
     msg = json.loads(serv.make_navi_message())
-    self.assertEqual(msg.get("vego"), 12.5)
-    self.assertEqual(msg.get("aego"), 1.1)
-    self.assertEqual(msg.get("steer_angle"), 3.3)
-    self.assertIs(msg.get("driver_steering"), True)
-    self.assertIs(msg.get("gas_press"), True)
-    self.assertIs(msg.get("brake_press"), False)
-    self.assertIs(msg.get("engaged"), False)
-    self.assertEqual(msg.get("left_blindspot"), 1)
-    self.assertEqual(msg.get("right_blindspot"), 0)
-    self.assertEqual(msg.get("lidar_behind_vdist_time"), 2.5)
-    self.assertIs(msg.get("lidar_lbblind"), True)
-    self.assertIs(msg.get("lidar_rbblind"), False)
-    self.assertEqual(msg.get("lf_vrel"), 4, "1.2*3.6=4.32 -> int 4")
-    self.assertEqual(msg.get("rf_vrel"), 2, "0.8*3.6=2.88 -> int 2")
-    self.assertEqual(msg.get("lb_vrel"), 7, "2.0*3.6=7.2 -> int 7")
-    self.assertEqual(msg.get("rb_vrel"), 5, "1.5*3.6=5.4 -> int 5")
-    self.assertEqual(msg.get("lb_drel"), 5.0, "main_lb_drel(mm) 取绝对值转米")
-    self.assertEqual(msg.get("rb_drel"), 5.0)
-    self.assertEqual(msg.get("lf_drel"), 5000, "per-lidar dict idx0 仍广播")
-    self.assertIs(msg.get("lidar_l"), True)
-    self.assertIs(msg.get("lidar_r"), False)
-    self.assertIs(msg.get("camera_l"), True)
-    self.assertIs(msg.get("camera_r"), False)
-    self.assertEqual(msg.get("roadcate"), 1)
-    self.assertEqual(msg.get("lat_a"), 0.12, "round2")
-    self.assertEqual(msg.get("max_curve"), 0.05, "round2")
-    self.assertIs(msg.get("op_blocked"), False)
-    self.assertIs(msg.get("road_blocked"), False)
-    self.assertEqual(msg.get("v_cruise_kph"), 60)
-    self.assertEqual(msg.get("v_ego_kph"), 55)
-    self.assertIs(msg.get("active"), True, "cruise_valid=True")
+    assert msg.get("vego") == 12.5
+    assert msg.get("aego") == 1.1
+    assert msg.get("steer_angle") == 3.3
+    assert msg.get("driver_steering") is True
+    assert msg.get("gas_press") is True
+    assert msg.get("brake_press") is False
+    assert msg.get("engaged") is False
+    assert msg.get("left_blindspot") == 1
+    assert msg.get("right_blindspot") == 0
+    assert msg.get("lidar_behind_vdist_time") == 2.5
+    assert msg.get("lidar_lbblind") is True
+    assert msg.get("lidar_rbblind") is False
+    assert msg.get("lf_vrel") == 4, "1.2*3.6=4.32 -> int 4"
+    assert msg.get("rf_vrel") == 2, "0.8*3.6=2.88 -> int 2"
+    assert msg.get("lb_vrel") == 7, "2.0*3.6=7.2 -> int 7"
+    assert msg.get("rb_vrel") == 5, "1.5*3.6=5.4 -> int 5"
+    assert msg.get("lb_drel") == 5.0, "main_lb_drel(mm) 取绝对值转米"
+    assert msg.get("rb_drel") == 5.0
+    assert msg.get("lf_drel") == 5000, "per-lidar dict idx0 仍广播"
+    assert msg.get("lidar_l") is True
+    assert msg.get("lidar_r") is False
+    assert msg.get("camera_l") is True
+    assert msg.get("camera_r") is False
+    assert msg.get("roadcate") == 1
+    assert msg.get("lat_a") == 0.12, "round2"
+    assert msg.get("max_curve") == 0.05, "round2"
+    assert msg.get("op_blocked") is False
+    assert msg.get("road_blocked") is False
+    assert msg.get("v_cruise_kph") == 60
+    assert msg.get("v_ego_kph") == 55
+    assert msg.get("active") is True
     # blind_enable: (lidar_l or camera_l) and (lidar_r or camera_r)
     # lidar_r/camera_r 为 False -> 右设备离线 -> blind_enable=False
-    self.assertIs(msg.get("blind_enable"), False)
+    assert msg.get("blind_enable") is False
 
   def test_navi_golden_none_fields_absent(self):
     """carState 字段为 None 时对应键缺席（保持重构前逐字段行为）。"""
@@ -119,11 +116,10 @@ class TestQ1GoldenValues(unittest.TestCase):
     msg = json.loads(serv.make_navi_message())
     for k in ("vego", "aego", "steer_angle", "gas_press", "brake_press",
               "left_blindspot", "right_blindspot", "lf_drel"):
-      self.assertNotIn(k, msg, f"None 字段 {k} 键应缺席")
+      assert k not in msg, f"None 字段 {k} 键应缺席"
     # sd.selfdrive_active 默认 False -> _apply_cruise_state 推导
     # cruise_enable=False -> engaged=False（非 None 透传，走 sm 推导链）
-    self.assertIs(msg.get("engaged"), False,
-                  "selfdrive_active=False -> cruise_enable=False -> engaged=False")
+    assert msg.get("engaged") is False
 
   def test_blinker_golden(self):
     """blinker 帧：gas/break 透传（快照后行为一致）。
@@ -135,9 +131,9 @@ class TestQ1GoldenValues(unittest.TestCase):
                     blinker_ctrl=1)
     serv.stockBlinkerCtrl = 0
     msg = json.loads(serv.make_blinker_message())
-    self.assertIs(msg.get("gas_press"), True)
-    self.assertIs(msg.get("brake_press"), True)
-    self.assertNotIn("blinker", msg, "meta 无 blinker 属性时键应缺席")
+    assert msg.get("gas_press") is True
+    assert msg.get("brake_press") is True
+    assert "blinker" not in msg, "meta 无 blinker 属性时键应缺席"
 
   def test_blinker_ctrl_branch_with_meta(self):
     """blinker_ctrl 分支：给 meta 挂 blinker 属性后，BLINKER_LEFT + stock=0
@@ -148,7 +144,7 @@ class TestQ1GoldenValues(unittest.TestCase):
     meta = serv.sm['modelV2'].meta
     meta.blinker = "none"  # 触发 BLINKER_LEFT 分支（meta.blinker == "none"）
     msg = json.loads(serv.make_blinker_message())
-    self.assertEqual(msg.get("blinker"), "left", "BLINKER_LEFT + stock=0")
+    assert msg.get("blinker") == "left", "BLINKER_LEFT + stock=0"
 
   def test_snapshot_dict_is_copy_not_reference(self):
     """快照浅拷贝 per-lidar dict：构建期写线程向原 dict 加 key 不得进已发帧。"""
@@ -162,17 +158,15 @@ class TestQ1GoldenValues(unittest.TestCase):
     # make_navi_message 内部先取快照再构建；writer 的 sleep 保证发生在快照之后
     msg = json.loads(serv.make_navi_message())
     t.join()
-    self.assertEqual(msg.get("lf_drel"), 100, "idx0 值不受后续写入影响")
-    self.assertEqual(msg.get("lf_drel1"), 200, "idx1 值取自快照时刻")
-    self.assertNotIn("lf_drel2", msg, "快照后追加的 key 不得进已发帧")
+    assert msg.get("lf_drel") == 100, "idx0 值不受后续写入影响"
+    assert msg.get("lf_drel1") == 200, "idx1 值取自快照时刻"
+    assert "lf_drel2" not in msg, "快照后追加的 key 不得进已发帧"
 
 
-class TestQ1ThreadTearing(unittest.TestCase):
+class TestQ1ThreadTearing:
   """Q-1: 多写多读并发撕裂回归（写者锁内原子改 X+Y，读者不得读到交叉帧）。"""
 
-  @classmethod
-  def setUpClass(cls):
-    cls.amap_navi = _load_fresh()
+  amap_navi = _load_fresh()
 
   def _mk_serv_full(self):
     sd = self.amap_navi.SharedData()
@@ -251,8 +245,8 @@ class TestQ1ThreadTearing(unittest.TestCase):
     stop.set()
     for t in threads:
       t.join()
-    self.assertTrue(read_done[0] > 100, f"读线程应完成足够迭代（实际 {read_done[0]}）")
-    self.assertEqual(errors, [], f"出现撕裂/异常读: {errors[:5]}")
+    assert read_done[0] > 100, f"读线程应完成足够迭代（实际 {read_done[0]}）"
+    assert errors == [], f"出现撕裂/异常读: {errors[:5]}"
 
   def test_read_frame_internally_consistent_pair(self):
     """精确撕裂判定：写者按配对表 (x -> y) 锁内原子写，读者帧内
@@ -293,39 +287,32 @@ class TestQ1ThreadTearing(unittest.TestCase):
       t.join()
     bad = [(t, b) for (t, b) in seen_pairs
            if b is not pairs.get(round(t, 1))]
-    self.assertEqual(bad, [], f"出现撕裂配对（t 与 b 取自不同写时刻）: {bad[:5]}")
-    self.assertGreaterEqual(len(seen_pairs), 2, "应观测到至少 2 种配对")
+    assert bad == [], f"出现撕裂配对（t 与 b 取自不同写时刻）: {bad[:5]}"
+    assert len(seen_pairs) >= 2, "应观测到至少 2 种配对"
 
 
-class TestQ1ReadPathLockSnapshot(unittest.TestCase):
+class TestQ1ReadPathLockSnapshot:
   """Q-1: 源码静态检查——读路径已锁内快照，不再裸读 self.shared_data。"""
 
-  @classmethod
-  def setUpClass(cls):
-    cls.amap_navi = _load_fresh()
+  amap_navi = _load_fresh()
 
   def test_snapshot_method_exists_and_holds_lock(self):
     amap = self.amap_navi
-    self.assertTrue(callable(getattr(amap.AmapNaviServ, "_shared_snapshot", None)),
-                    "Q-1 RED: 应存在 AmapNaviServ._shared_snapshot")
+    assert callable(getattr(amap.AmapNaviServ, "_shared_snapshot", None)), "Q-1 RED: 应存在 AmapNaviServ._shared_snapshot"
     import inspect
     src = inspect.getsource(amap.AmapNaviServ._shared_snapshot)
-    self.assertIn("with self._lock:", src, "Q-1 RED: 快照应在 self._lock 临界区内完成")
+    assert "with self._lock:" in src, "Q-1 RED: 快照应在 self._lock 临界区内完成"
 
   def test_navi_and_blinker_use_snapshot(self):
     amap = self.amap_navi
     import inspect
     navi_src = inspect.getsource(amap.AmapNaviServ.make_navi_message)
     blinker_src = inspect.getsource(amap.AmapNaviServ.make_blinker_message)
-    self.assertIn("self._shared_snapshot()", navi_src,
-                  "Q-1 RED: make_navi_message 应取锁内快照")
-    self.assertIn("self._shared_snapshot()", blinker_src,
-                  "Q-1 RED: make_blinker_message 应取锁内快照")
+    assert "self._shared_snapshot()" in navi_src, "Q-1 RED: make_navi_message 应取锁内快照"
+    assert "self._shared_snapshot()" in blinker_src, "Q-1 RED: make_blinker_message 应取锁内快照"
     # 快照之后不得再直接裸读 self.shared_data.<field>
-    self.assertNotIn("self.shared_data.behind_ttc", navi_src,
-                     "Q-1 RED: 读路径不应裸读 self.shared_data.behind_ttc")
-    self.assertNotIn("self.shared_data.lf_drel", navi_src,
-                     "Q-1 RED: 读路径不应裸读 self.shared_data.lf_drel")
+    assert "self.shared_data.behind_ttc" not in navi_src, "Q-1 RED: 读路径不应裸读 self.shared_data.behind_ttc"
+    assert "self.shared_data.lf_drel" not in navi_src, "Q-1 RED: 读路径不应裸读 self.shared_data.lf_drel"
 
   def test_no_nested_lock_in_read_path(self):
     """读路径不产生嵌套锁获取（_shared_snapshot 内不再调用其他持锁方法）。"""
@@ -333,8 +320,7 @@ class TestQ1ReadPathLockSnapshot(unittest.TestCase):
     import inspect
     snap_src = inspect.getsource(amap.AmapNaviServ._shared_snapshot)
     # 快照临界区内只允许读 self.shared_data 字段并 return，不得再 with self._lock
-    self.assertEqual(snap_src.count("with self._lock:"), 1,
-                     "Q-1: _shared_snapshot 应恰好一段锁临界区（无嵌套）")
+    assert snap_src.count("with self._lock:") == 1, "Q-1: _shared_snapshot 应恰好一段锁临界区（无嵌套）"
 
 
 if __name__ == "__main__":

@@ -16,37 +16,35 @@ TDD Contract Test for P0-1: CANCEL 指令消费优先级
 断言 desire_helper.py 中 CANCEL 消费分支出现在计数分支之前，
 且 CANCEL 分支自身为独立 if（不挂在其它条件的 elif 链上）。
 """
-import unittest
+import pytest
 from pathlib import Path
 
 DESIRE_HELPER = Path("selfdrive/controls/lib/desire_helper.py")
 
 
-class TestCancelPriority(unittest.TestCase):
+class TestCancelPriority:
 
-  def setUp(self):
+  @pytest.fixture(autouse=True)
+  def _setup(self):
     self.src = DESIRE_HELPER.read_text()
 
   def _pos(self, needle: str) -> int:
     pos = self.src.find(needle)
-    self.assertGreater(pos, 0, f"未找到锚点: {needle}")
+    assert pos > 0, f"未找到锚点: {needle}"
     return pos
 
   def test_cancel_branch_appears_before_count_branch(self):
     cancel_pos = self._pos('carrotMan.carrotCmd == "CANCEL"')
     count_pos = self._pos("if self.carrot_lane_change_count > 0:")
-    self.assertLess(
-      cancel_pos, count_pos,
-      "P0-1: CANCEL 消费分支必须位于 carrot_lane_change_count 计数分支之前，"
-      "否则 OVERTAKE(20s) 期间车机断联自动 CANCEL 被吞")
+    assert cancel_pos < count_pos
 
   def test_cancel_branch_is_independent_if(self):
     # CANCEL 分支必须是独立 if（不被上一分支的 elif 链阻挡）
     cancel_pos = self._pos('carrotMan.carrotCmd == "CANCEL"')
     line_start = self.src.rfind("\n", 0, cancel_pos) + 1
     line = self.src[line_start:cancel_pos]
-    self.assertIn("if ", line, "CANCEL 消费分支应为独立 if 判断")
-    self.assertNotIn("elif", line, "CANCEL 消费分支不得挂在 elif 链上")
+    assert "if " in line, "CANCEL 消费分支应为独立 if 判断"
+    assert "elif" not in line, "CANCEL 消费分支不得挂在 elif 链上"
 
 
 if __name__ == "__main__":

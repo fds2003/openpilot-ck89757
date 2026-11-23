@@ -7,7 +7,6 @@ Verifies:
 3. 3-level overtake thresholds (Aggressive 1.8s / Normal 2.5s / Safe 3.5s).
 4. Sensor offline / invalid data MUST fail-safe block (rear_conflict == True).
 """
-import unittest
 
 def calculate_rear_ttc(main_lb_drel, lb_vrel, main_rb_drel, rb_vrel, sensor_alive=True):
     """
@@ -46,47 +45,47 @@ def evaluate_rear_conflict(behind_ttc, overtake_mode, amap_alive=True):
 
     return behind_ttc < thr
 
-class TestTtcAndLaneChangeGating(unittest.TestCase):
+class TestTtcAndLaneChangeGating:
 
     def test_empty_lane_permits_lane_change(self):
         """F-32-01 Fix: On an empty lane with no approaching cars, lane change MUST NOT be blocked!"""
         # Scenario: Sensors alive, but no rear cars detected
         ttc = calculate_rear_ttc(main_lb_drel=None, lb_vrel=None, main_rb_drel=None, rb_vrel=None, sensor_alive=True)
-        self.assertEqual(ttc, 99.0, "Empty lane should produce 99.0 clear sentinel")
+        assert ttc == 99.0, "Empty lane should produce 99.0 clear sentinel"
 
         conflict = evaluate_rear_conflict(behind_ttc=ttc, overtake_mode=1, amap_alive=True)
-        self.assertFalse(conflict, "Empty lane with no cars MUST NOT block lane change!")
+        assert not conflict, "Empty lane with no cars MUST NOT block lane change!"
 
     def test_approaching_vehicle_blocks_lane_change(self):
         """Fast approaching rear vehicle (TTC = 1.2s) MUST block lane change under Normal mode (2.5s)"""
         # Scenario: Rear left vehicle at -18m approaching at -15m/s (TTC = 1.2s)
         ttc = calculate_rear_ttc(main_lb_drel=-18000, lb_vrel=-15.0, main_rb_drel=None, rb_vrel=None, sensor_alive=True)
-        self.assertAlmostEqual(ttc, 1.2, places=2)
+        assert abs(ttc - 1.2) < 0.01
 
         conflict = evaluate_rear_conflict(behind_ttc=ttc, overtake_mode=1, amap_alive=True)
-        self.assertTrue(conflict, "Rear vehicle approaching at TTC 1.2s MUST block lane change!")
+        assert conflict, "Rear vehicle approaching at TTC 1.2s MUST block lane change!"
 
     def test_three_level_overtake_threshold_boundaries(self):
         """TTC = 2.0s boundary test across Aggressive (1.8s), Normal (2.5s), and Safe (3.5s)"""
         ttc = 2.0
         # Mode 0 (Aggressive, thr=1.8s): 2.0 >= 1.8 -> permit
-        self.assertFalse(evaluate_rear_conflict(behind_ttc=ttc, overtake_mode=0, amap_alive=True))
+        assert not evaluate_rear_conflict(behind_ttc=ttc, overtake_mode=0, amap_alive=True)
 
         # Mode 1 (Normal, thr=2.5s): 2.0 < 2.5 -> block
-        self.assertTrue(evaluate_rear_conflict(behind_ttc=ttc, overtake_mode=1, amap_alive=True))
+        assert evaluate_rear_conflict(behind_ttc=ttc, overtake_mode=1, amap_alive=True)
 
         # Mode 2 (Safe, thr=3.5s): 2.0 < 3.5 -> block
-        self.assertTrue(evaluate_rear_conflict(behind_ttc=ttc, overtake_mode=2, amap_alive=True))
+        assert evaluate_rear_conflict(behind_ttc=ttc, overtake_mode=2, amap_alive=True)
 
     def test_sensor_offline_fail_safe_blocks(self):
         """When sensors or amapNavi are dead, system MUST fail-safe block (rear_conflict == True)"""
         # Sensor offline -> ttc = 0.0
         ttc = calculate_rear_ttc(main_lb_drel=None, lb_vrel=None, main_rb_drel=None, rb_vrel=None, sensor_alive=False)
-        self.assertEqual(ttc, 0.0)
-        self.assertTrue(evaluate_rear_conflict(behind_ttc=ttc, overtake_mode=1, amap_alive=True))
+        assert ttc == 0.0
+        assert evaluate_rear_conflict(behind_ttc=ttc, overtake_mode=1, amap_alive=True)
 
         # amapNavi service not alive
-        self.assertTrue(evaluate_rear_conflict(behind_ttc=99.0, overtake_mode=1, amap_alive=False))
+        assert evaluate_rear_conflict(behind_ttc=99.0, overtake_mode=1, amap_alive=False)
 
 if __name__ == "__main__":
     unittest.main()
