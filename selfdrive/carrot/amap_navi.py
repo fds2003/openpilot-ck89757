@@ -1738,8 +1738,10 @@ class AmapNaviServ:
           if self.lane_online:
             ext_state += 1
           self.shared_data.ext_state = ext_state
-      except (KeyError, RuntimeError, Exception) as e:
-        print(f"[_clean_clients_thread] exception: {e}, continue")
+      except (KeyError, RuntimeError, TypeError) as e:
+        cloudlog.warning(f"[_clean_clients_thread] 预期异常: {e}")
+      except Exception:
+        cloudlog.exception("[_clean_clients_thread] 非预期异常（附栈追踪）")
       time.sleep(0.2)
 
   def navi_broadcast_info(self):
