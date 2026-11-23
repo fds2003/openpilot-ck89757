@@ -17,6 +17,28 @@ BLINKER_BOTH = 3
 REAR_TTC_THRESHOLDS = {0: 1.8, 1: 2.5, 2: 3.5}
 
 
+def calculate_rear_ttc(main_lb_drel, lb_vrel, main_rb_drel, rb_vrel, lidar_online):
+  """后方 TTC 计算（生产单一实现，自 amap_navi.make_navi_message 抽取，P1-5/P2-1）。
+
+  Args:
+    main_lb_drel / main_rb_drel: 左/右后向目标纵向距离（mm）；None = 无目标。
+    lb_vrel / rb_vrel: 对应目标相对速度（m/s）。
+    lidar_online: 左右两侧后向雷达是否同时在线。
+
+  Returns:
+    有逼近目标（v < -0.1 m/s）: min(d/|v|) —— 最保守（两侧取小）。
+    无逼近目标且确为净空（两侧无目标 + 雷达在线）: 99.0。
+    其余（有并排目标 / 雷达离线）: 0.0 失效哨兵（fail-safe）。
+  """
+  ttc_list = []
+  for d, v in ((main_lb_drel, lb_vrel), (main_rb_drel, rb_vrel)):
+    if d is not None and abs(d) > 0 and v is not None and v < -0.1:
+      ttc_list.append((abs(d) / 1000.0) / abs(v))
+  no_rear_target = main_lb_drel is None and main_rb_drel is None
+  clear_lane = (not ttc_list) and no_rear_target and lidar_online
+  return min(ttc_list) if ttc_list else (99.0 if clear_lane else 0.0)
+
+
 def evaluate_rear_gate(rear_radar: bool, behind_ttc: float, overtake_mode: int,
                        amap_alive: bool, rear_sensor_seen: bool = True) -> tuple[bool, bool]:
   """判定后方 TTC 门禁与自动变道阻断。

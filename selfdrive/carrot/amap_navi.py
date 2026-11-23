@@ -11,6 +11,7 @@ import cereal.messaging as messaging
 from openpilot.common.realtime import Ratekeeper
 from openpilot.system.hardware import PC
 from openpilot.selfdrive.carrot.config import UnifiedParams
+from openpilot.selfdrive.controls.lib.rear_gate import calculate_rear_ttc
 from openpilot.selfdrive.carrot.udp_trust import evaluate as udp_trust_evaluate, parse_allowed
 from openpilot.selfdrive.carrot.traffic_light import BRIDGE_TL_PORT, state_from_wire
 from openpilot.common.swaglog import cloudlog
@@ -434,29 +435,12 @@ class AmapNaviServ:
     msg.amapNavi.rfDrel = 0 if (self.shared_data.main_rf_drel is None) else int(round(self.shared_data.main_rf_drel/100))
     msg.amapNavi.rbDrel = 0 if (self.shared_data.main_rb_drel is None) else int(round(self.shared_data.main_rb_drel/100))
     msg.amapNavi.overtakeMode = self.shared_data.overtake_mode
-    # 两侧后向雷达都参与，取最小 TTC（最保守）
-    ttc_list = []
-    for side in ("lb", "rb"):
-      d = getattr(self.shared_data, f"main_{side}_drel", None)
-      v = getattr(self.shared_data, f"{side}_vrel", None)
-      if d is not None and abs(d) > 0 and v is not None and v < -0.1:
-        ttc_list.append((abs(d) / 1000.0) / abs(v))
-    # P0 裁决（M-12 补强）：仅当"确为净空"才用 99.0 放行，其余一律 0.0 失效阻断。
-    # 净空需同时满足：
-    #   1) 两侧后向均无目标：main_lb_drel / main_rb_drel 均为 None。
-    #      发布端 lbDrelValid / rbDrelValid 等价于这两个字段非 None；
-    #      lidar_data_timeout 在 1 秒内无更新即清空，数据新鲜度由该现成机制保证。
-    #   2) 两侧雷达在线（lidar_l and lidar_r）：由 _clients 每帧重算，
-    #      _clean_clients_thread 以 last_seen < 1.0s 淘汰断流客户端，断流即离线。
-    #   3) ttc_list 为空（无后车逼近）。
-    # 关键修正：main_*_drel 非 None 表示"检测到目标"，即使 vrel≈0（并排车）也不得
-    # 判净空。16aff86 的 sensor_ready 把"有目标"当成"传感器就绪"的正面证据，
-    # 会把贴身并行车辆当成空车道放行，这是本次裁决要消除的 fail-open。
-    no_rear_target = (self.shared_data.main_lb_drel is None and
-                      self.shared_data.main_rb_drel is None)
-    lidar_online = self.shared_data.lidar_l and self.shared_data.lidar_r
-    clear_lane = (not ttc_list) and no_rear_target and lidar_online
-    ttc = min(ttc_list) if ttc_list else (99.0 if clear_lane else 0.0)
+    # P1-5/P2-1: TTC 计算收敛至 rear_gate.calculate_rear_ttc（生产单一实现，
+    # 语义注释随函数迁移；净空裁决与 0.0 失效哨兵行为不变）
+    ttc = calculate_rear_ttc(
+      self.shared_data.main_lb_drel, self.shared_data.lb_vrel,
+      self.shared_data.main_rb_drel, self.shared_data.rb_vrel,
+      self.shared_data.lidar_l and self.shared_data.lidar_r)
     self.shared_data.behind_ttc = ttc
     msg.amapNavi.lidarBehindVdistTime = float(ttc)
 
