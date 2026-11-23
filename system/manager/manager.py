@@ -195,7 +195,7 @@ def get_default_params():
     ("ExtBlinkerCtrlTest", "0"),
     ("BlinkerMode", "1"),
     ("LaneStabTime", "30"),
-    ("BsdDelayTime", "20"),
+    ("BsdDelayTime", "10"),
     ("SideBsdDelayTime", "10"),
     ("SideRelDistTime", "10"),
     ("SidevRelDistTime", "10"),
