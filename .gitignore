@@ -105,3 +105,9 @@ Pipfile
 .history
 .ionide
 .vs
+
+### P2-5: 本地/大文件不入库 ###
+custo_manual.pdf
+.arts/
+.vscode/
+.agnes/

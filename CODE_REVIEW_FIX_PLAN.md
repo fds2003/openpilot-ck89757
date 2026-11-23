@@ -78,7 +78,12 @@
   - Divergent Change：`desire_helper.py` 一次改 5 个不相关原因 → 后续按关注点拆分提交。
   - Shotging：后向 TTC fail-safe 扇出 4 文件 4 测试 → 集中到单一模块。
 
-- [ ] **P2-5 (Spec) 范围蔓延清理**
+- [x] **P2-5 (Spec) 范围蔓延清理**（已处置，本地文件均保留）
+  - `custo_manual.pdf`（43MB）：git rm --cached 移出版本控制 + .gitignore，本地保留
+  - `.arts/*` / `.vscode/*` / `.agnes/*.md`：本地 IDE/计划配置，移出版本控制 + .gitignore
+  - `tools/*.bat`：**保留**——为用户 Windows 侧车机日志拉取/局域网接收工作流工具（pull_from_car_ssh / start_lan_receiver），与平台执行目标无冲突
+  - `web_interface.py` 127.0.0.1 绑定：07 号部署文档已记载 SSH 隧道方式（一致）；09 号 §3.2 LAN 轮询描述已加勘误（S-1 后不可达）
+  - 历史 43MB 体积如需彻底清除需 BFG/filter-repo 重写历史，另行单独操作
   - `custo_manual.pdf`（43MB 二进制）、`.arts/*`、`.vscode/settings.json`、`.agnes/COMPREHENSIVE_OPTIMIZATION_PLAN.md`、`tools/*.bat`：确认去留（建议大二进制移出 git 历史）。
   - `web_interface.py` 仅绑 127.0.0.1：确认是否保留（改变了文档所述 LAN 访问行为），同步更新文档。
   - `desire_helper.py` `atc_cancel_delay` min→max：在提交信息中补说明。
