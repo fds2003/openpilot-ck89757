@@ -59,7 +59,7 @@
   - 问题：测试 helper 在 `ttc_list` 空时返回 `99.0`，生产返回 `0.0`；分叉分支无覆盖。
   - 修复：测试调用生产逻辑；补 `no_rear_target=False` 用例。
 
-- [ ] **P1-6 (Spec) `test_atc_state_telemetry.py` 对不存在的 `MockStateMachine` 断言**
+- [x] **P1-6 (Spec) `test_atc_state_telemetry.py` 对不存在的 `MockStateMachine` 断言**（已处置：mock 循环自证测试删除，M-14 用例移植至 AmapNavi-Reborn 真实生产测试 a773a3f）
   - 修复：改为对真实 StateMachine（或删除该测试）。
 
 ## P2 — 质量 / 仓库卫生
