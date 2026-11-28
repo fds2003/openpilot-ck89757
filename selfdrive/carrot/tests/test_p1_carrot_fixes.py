@@ -292,5 +292,20 @@ class TestTimedGpsSync(unittest.TestCase):
     self.assertNotIn("=> ignored", source)
 
 
+class TestTestedBranchConfig(unittest.TestCase):
+
+  def test_cp_custo_amap_in_tested_branches(self):
+    source = _read_source("system/version.py")
+    tree = ast.parse(source)
+    for node in tree.body:
+      if isinstance(node, ast.Assign):
+        for t in node.targets:
+          if isinstance(t, ast.Name) and t.id == "TESTED_BRANCHES":
+            seg = ast.get_source_segment(source, node) or ""
+            self.assertIn("cp-custo-amap", seg)
+            return
+    self.fail("TESTED_BRANCHES assignment not found in system/version.py")
+
+
 if __name__ == "__main__":
   unittest.main()
