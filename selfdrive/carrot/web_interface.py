@@ -10,6 +10,7 @@ import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 from openpilot.common.params import Params
+from openpilot.selfdrive.carrot.log_monitor import get_error_summary
 from openpilot.system.manager.manager import get_default_params_key
 
 params = Params()
@@ -167,6 +168,8 @@ class WebInterface:
                         self.send_default_nav_params()
                     elif self.path == '/fetch_params':
                         self.fetch_params()
+                    elif self.path == '/logs':
+                        self.send_json_response(get_error_summary())
                     else:
                         self.send_error(404, f"{self.path} Page not found")
 
