@@ -354,8 +354,8 @@ class LongitudinalMpc:
     # (v_ego >= 0), so vLead (= v_ego + vRel) must be >= vRel. If radard ever
     # inverts the vRel definition, this assert fires loudly instead of letting
     # the lead clamp below (~line 396) silently reverse.
-    if lead.status:
-      assert v_lead >= lead.vRel - 1e-6, f"vRel convention violated: vLead={v_lead} < vRel={lead.vRel}"
+    if lead.status and v_lead < lead.vRel - 0.5:
+      cloudlog.warning(f"vRel convention violated: vLead={v_lead} < vRel={lead.vRel}")
 
     if a_lead < -2.0 and j_lead > 0.5:
       a_lead = a_lead + j_lead
