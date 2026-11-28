@@ -221,5 +221,23 @@ class TestAmapNaviLockCompleteness(unittest.TestCase):
     self.assertNotIn('getattr(self, "clients", {}).copy()', source, "Shallow clients.copy() shares nested info dicts across threads")
 
 
+class TestDmonitoringMetadataPresent(unittest.TestCase):
+
+  def test_dmonitoring_metadata_pkl_exists_and_valid(self):
+    import pickle
+    meta_path = os.path.join(ROOT, "selfdrive", "modeld", "models", "dmonitoring_model_metadata.pkl")
+    self.assertTrue(os.path.exists(meta_path), f"Missing {meta_path}")
+    with open(meta_path, "rb") as f:
+      meta = pickle.load(f)
+    self.assertEqual(meta["input_shapes"]["input_img"], (1, 1382400))
+    self.assertEqual(meta["input_shapes"]["calib"], (1, 3))
+    for k in ("wheel_on_right", "face_descs_lhd", "face_prob_lhd", "using_phone_prob_lhd"):
+      self.assertIn(k, meta["output_slices"])
+
+  def test_sconscript_includes_dmonitoring_metadata(self):
+    source = _read_source("selfdrive/modeld/SConscript")
+    self.assertIn("for model_name in ['driving_vision', 'driving_policy', 'dmonitoring_model']:", source)
+
+
 if __name__ == "__main__":
   unittest.main()
