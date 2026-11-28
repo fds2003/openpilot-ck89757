@@ -451,7 +451,11 @@ class AmapNaviServ:
 
   def update_param(self):
     if self.frame % 100 == 0:
-      self._udp_allowed_ips = parse_allowed(self.params.get("CarrotUdpAllowedIps"))
+      try:
+        raw_allowed = self.params.get("CarrotUdpAllowedIps")
+      except Exception:
+        raw_allowed = os.environ.get("CARROT_UDP_ALLOWED_IPS", "")
+      self._udp_allowed_ips = parse_allowed(raw_allowed)
       self.lidarBsdDelayTime = self.params.get_int("LidarBsdDelayTime") * 0.1
       self.lidarFrontVDistTime = self.params.get_int("LidarFrontVDistTime") * 0.1
       self.lidarFrontVRelDistTime = self.params.get_int("LidarFrontVRelDistTime") * 0.1

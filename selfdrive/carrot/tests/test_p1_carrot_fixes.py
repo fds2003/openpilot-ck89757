@@ -307,5 +307,33 @@ class TestTestedBranchConfig(unittest.TestCase):
     self.fail("TESTED_BRANCHES assignment not found in system/version.py")
 
 
+class TestUdpAllowedIpsSafeFallback(unittest.TestCase):
+
+  def test_carrot_man_udp_trusted_survives_unknown_key(self):
+    def _raise_unknown(_key):
+      raise KeyError(b"CarrotUdpAllowedIps")
+
+    fn = _extract_method(
+      "selfdrive/carrot/carrot_man.py",
+      "CarrotMan",
+      "_udp_trusted",
+      {
+        "time": __import__("time"),
+        "os": os,
+        "parse_allowed": lambda v: set(),
+        "udp_trust_evaluate": lambda ip, local, wl, al: (True, False),
+      },
+    )
+    obj = types.SimpleNamespace(
+      _udp_allowed_ts=0.0,
+      _udp_allowed_ips=set(),
+      _udp_source_whitelist=set(),
+      _trust_local=lambda: "192.168.8.113",
+      params=types.SimpleNamespace(get=_raise_unknown),
+    )
+    obj._udp_trusted = types.MethodType(fn, obj)
+    self.assertTrue(obj._udp_trusted(("192.168.8.100", 7706)))
+
+
 if __name__ == "__main__":
   unittest.main()

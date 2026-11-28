@@ -625,7 +625,11 @@ class CarrotMan:
     ip = remote_addr[0]
     now = time.time()
     if now - self._udp_allowed_ts > 10.0:
-      self._udp_allowed_ips = parse_allowed(self.params.get("CarrotUdpAllowedIps"))
+      try:
+        raw_allowed = self.params.get("CarrotUdpAllowedIps")
+      except Exception:
+        raw_allowed = os.environ.get("CARROT_UDP_ALLOWED_IPS", "")
+      self._udp_allowed_ips = parse_allowed(raw_allowed)
       self._udp_allowed_ts = now
     trusted, learn = udp_trust_evaluate(
       ip, self._trust_local(), self._udp_source_whitelist, self._udp_allowed_ips)
