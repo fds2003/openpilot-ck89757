@@ -12,16 +12,17 @@ from openpilot.common.gps import get_gps_location_service
 
 
 def set_time(new_time):
-  diff = datetime.datetime.now() - new_time
+  if new_time.tzinfo is not None:
+    new_time = new_time.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+  now_utc = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+  diff = now_utc - new_time
   if abs(diff) < datetime.timedelta(seconds=10):
     cloudlog.debug(f"Time diff too small: {diff}")
     return
 
-  cloudlog.debug(f"Setting time to {new_time}")
-  print(f"GPS Setting time to {new_time}   => ignored")
-  return
+  cloudlog.debug(f"Setting time to {new_time} UTC")
   try:
-    subprocess.run(f"TZ=UTC date -s '{new_time}'", shell=True, check=True)
+    subprocess.run(["date", "-u", "-s", new_time.strftime("%Y-%m-%d %H:%M:%S")], check=True)
   except subprocess.CalledProcessError:
     cloudlog.exception("timed.failed_setting_time")
 
@@ -49,7 +50,7 @@ def main() -> NoReturn:
     pm.send('clocks', msg)
 
     gps = sm[gps_location_service]
-    gps_time = datetime.datetime.fromtimestamp(gps.unixTimestampMillis / 1000.)
+    gps_time = datetime.datetime.fromtimestamp(gps.unixTimestampMillis / 1000., tz=datetime.timezone.utc).replace(tzinfo=None)
     if not sm.updated[gps_location_service] or (time.monotonic() - sm.logMonoTime[gps_location_service] / 1e9) > 2.0:
       continue
     if not gps.hasFix:

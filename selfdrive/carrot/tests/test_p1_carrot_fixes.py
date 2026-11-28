@@ -239,5 +239,58 @@ class TestDmonitoringMetadataPresent(unittest.TestCase):
     self.assertIn("for model_name in ['driving_vision', 'driving_policy', 'dmonitoring_model']:", source)
 
 
+class TestTimedGpsSync(unittest.TestCase):
+
+  def _load_set_time(self, fake_now_utc, calls):
+    import datetime
+    class _FakeDatetime(datetime.datetime):
+      @classmethod
+      def now(cls, tz=None):
+        if tz is not None:
+          return fake_now_utc.replace(tzinfo=datetime.timezone.utc).astimezone(tz)
+        return fake_now_utc + datetime.timedelta(hours=8)  # simulate UTC+8 local time
+    fake_subprocess = types.SimpleNamespace(
+      CalledProcessError=RuntimeError,
+      run=lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    fake_cloudlog = types.SimpleNamespace(debug=lambda *a, **kw: None, exception=lambda *a, **kw: None)
+    fn = _extract_function(
+      "system/timed.py",
+      "set_time",
+      {
+        "datetime": types.SimpleNamespace(
+          datetime=_FakeDatetime,
+          timedelta=datetime.timedelta,
+          timezone=datetime.timezone,
+        ),
+        "subprocess": fake_subprocess,
+        "cloudlog": fake_cloudlog,
+      },
+    )
+    return fn
+
+  def test_set_time_executes_when_diff_large(self):
+    import datetime
+    calls = []
+    set_time = self._load_set_time(datetime.datetime(2026, 11, 28, 8, 0, 0), calls)
+    set_time(datetime.datetime(2026, 11, 28, 8, 1, 0))  # 60s ahead in UTC
+    self.assertEqual(len(calls), 1, "set_time must invoke date command when UTC diff >= 10s")
+    cmd = calls[0][0][0]
+    self.assertIn("2026-11-28 08:01:00", " ".join(cmd) if isinstance(cmd, list) else cmd)
+
+  def test_set_time_skips_when_utc_matches_under_utc_plus_8(self):
+    import datetime
+    calls = []
+    # UTC now is 08:00:00 (local UTC+8 is 16:00:00). Passing UTC 08:00:03 should be < 10s diff!
+    set_time = self._load_set_time(datetime.datetime(2026, 11, 28, 8, 0, 0), calls)
+    set_time(datetime.datetime(2026, 11, 28, 8, 0, 3))
+    self.assertEqual(len(calls), 0, "set_time must compare in UTC, not local UTC+8 time")
+
+  def test_timed_uses_utc_fromtimestamp(self):
+    source = _read_source("system/timed.py")
+    self.assertIn("timezone.utc", source)
+    self.assertNotIn("=> ignored", source)
+
+
 if __name__ == "__main__":
   unittest.main()
