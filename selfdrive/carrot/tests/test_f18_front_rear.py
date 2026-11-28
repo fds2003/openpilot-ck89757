@@ -7,15 +7,15 @@ GREEN state (after patch): delta_v_front uses for_front, semantics are correct.
 
 Test strategy: source-level scan + behavioral simulation.
 """
+import pytest
 import os
 import re
-import unittest
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 CARROT_SERV = os.path.join(ROOT, "selfdrive", "carrot", "carrot_serv.py")
 
 
-class TestF18FrontRearCopyPaste(unittest.TestCase):
+class TestF18FrontRearCopyPaste:
 
     # ------------------------------------------------------------------
     # 1. Source-level check: for_front MUST be called in front_rear
@@ -28,7 +28,7 @@ class TestF18FrontRearCopyPaste(unittest.TestCase):
 
         # Find the compute_delta_v_for_front_rear method body
         m = re.search(r"def compute_delta_v_for_front_rear\(.*?(?=\n  def |\Z)", text, re.DOTALL)
-        self.assertIsNotNone(m, "compute_delta_v_for_front_rear not found in carrot_serv.py")
+        assert m is not None
         body = m.group(0)
 
         # RED check: body must NOT use for_rear for delta_v_front
@@ -40,11 +40,10 @@ class TestF18FrontRearCopyPaste(unittest.TestCase):
         )
         if front_with_front:
           # GREEN state — for_front is used, good
-          self.assertIsNone(front_with_rear,
-            "compute_delta_v_for_front_rear must NOT call for_rear for delta_v_front (F-18 bug)")
+          assert front_with_rear is None
         else:
           # RED state — raise to make test fail
-          self.fail(
+          pytest.fail(
             "F-18 RED: delta_v_front is computed via compute_delta_v_for_rear, "
             "but it should use compute_delta_v_for_front. "
             "Apply carrot_f18_f22.patch to fix."
@@ -58,7 +57,7 @@ class TestF18FrontRearCopyPaste(unittest.TestCase):
         try:
           module = importlib.import_module("openpilot.selfdrive.carrot.carrot_serv")
         except Exception as e:
-          self.skipTest(f"openpilot namespace not importable in this environment: {e}")
+          pytest.skip(f"openpilot namespace not importable in this environment: {e}")
         CarrotServ = module.CarrotServ
 
         # Minimal mock — bypass __init__ network setup
@@ -93,12 +92,7 @@ class TestF18FrontRearCopyPaste(unittest.TestCase):
           decel_priority=False
         )
         # If F-18 fix applied: front (slower) should produce a POSITIVE delta_v
-        self.assertGreater(
-          delta_v, 0.0,
-          "F-18: front car is slower than ego → delta_v should be positive "
-          "(accelerate to close gap). Got delta_v=%.2f. "
-          "Likely still using for_rear logic (F-18 bug not fixed)." % delta_v
-        )
+        assert delta_v > 0.0
 
     # ------------------------------------------------------------------
     # 3. Behavioral: front car faster → negative delta_v (decelerate)
@@ -110,7 +104,7 @@ class TestF18FrontRearCopyPaste(unittest.TestCase):
         try:
           module = importlib.import_module("openpilot.selfdrive.carrot.carrot_serv")
         except Exception as e:
-          self.skipTest(f"openpilot namespace not importable in this environment: {e}")
+          pytest.skip(f"openpilot namespace not importable in this environment: {e}")
         CarrotServ = module.CarrotServ
 
         serv = CarrotServ.__new__(CarrotServ)
@@ -136,11 +130,7 @@ class TestF18FrontRearCopyPaste(unittest.TestCase):
           speed_up_enable=False,
           decel_priority=True
         )
-        self.assertLessEqual(
-          delta_v, 0.0,
-          "F-18: front car is faster AND decel_priority → delta_v must be <= 0. "
-          "Got %.2f." % delta_v
-        )
+        assert delta_v <= 0.0
 
 if __name__ == "__main__":
     unittest.main()

@@ -5,7 +5,6 @@ selfdrive/carrot/tests/test_dynamics_invariants.py
 TDD 单元测试套件：动力学与工控数学不变量断言 (避让边界 & 8AT停稳下限)
 =====================================================================
 """
-import unittest
 
 def calculate_clamped_avoidance(raw_shift, lane_width, car_width=1.85, safety_margin=0.15):
   """提取 lane_planner_2.py 中的两轮车避让车道边界几何限幅纯函数"""
@@ -30,7 +29,7 @@ def simulate_100hz_stopping_decel(initial_accel, stop_accel, steps=500, dt=0.01)
     history.append(output_accel)
   return history
 
-class TestDynamicsInvariants(unittest.TestCase):
+class TestDynamicsInvariants:
 
   def test_lateral_lane_boundary_invariant(self):
     """断言 1: 无论车道多窄，两轮车避让后的左车轮外缘距车道线恒 >= 15cm"""
@@ -47,10 +46,7 @@ class TestDynamicsInvariants(unittest.TestCase):
         clearance = half_lane - left_wheel_y
 
         # 严格数学断言：裕量必须 >= 0.15m (允许浮点误差 1e-7)
-        self.assertGreaterEqual(
-          clearance, SAFETY_MARGIN - 1e-7,
-          f"在车道宽 {lane_w}m 时避让 {raw_shift}m 压线！左侧净空仅剩 {clearance:.4f}m"
-        )
+        assert clearance >= SAFETY_MARGIN - 1e-7, f"在车道宽 {lane_w}m 时避让 {raw_shift}m 压线！左侧净空仅剩 {clearance:.4f}m"
 
   def test_longitudinal_stopping_non_decay_invariant(self):
     """断言 2: 100Hz 500 周期连续停稳期间，制动减速度绝对不能发生乘性衰减归零"""
@@ -61,21 +57,15 @@ class TestDynamicsInvariants(unittest.TestCase):
     bad_accel = -1.0
     for _ in range(15): # 仅 150ms
       bad_accel *= 0.75
-    self.assertAlmostEqual(bad_accel, 0.0, delta=0.02, msg="已复现旧版乘性复利 Bug: 150ms 内制动力瓦解！")
+    assert abs(bad_accel - 0.0) <= 0.02, "已复现旧版乘性复利 Bug: 150ms 内制动力瓦解！"
 
     # 运行新版无状态下限法
     accel_history = simulate_100hz_stopping_decel(initial_accel, stop_accel, steps=500)
     
     # 严格工控断言：在所有 500 个时间步内，制动力恒定保底在 -0.65 m/s² 以下，绝不归零
     for step, accel in enumerate(accel_history):
-      self.assertLessEqual(
-        accel, -0.65,
-        f"在第 {step} 步制动力减弱至 {accel} m/s²，存在溜车隐患！"
-      )
-      self.assertGreaterEqual(
-        accel, -1.2,
-        f"在第 {step} 步制动力超限！"
-      )
+      assert accel <= -0.65, f"在第 {step} 步制动力减弱至 {accel} m/s²，存在溜车隐患！"
+      assert accel >= -1.2, f"在第 {step} 步制动力超限！"
 
 if __name__ == "__main__":
   unittest.main()

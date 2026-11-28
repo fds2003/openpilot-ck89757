@@ -1,92 +1,73 @@
 #!/usr/bin/env python3
 """
-TDD Unit Test for Slice 1: TTC Calculation and Lane Change Gating (F-32-01)
-Verifies:
-1. Empty lane (no approaching vehicle) MUST permit lane change (rear_conflict == False).
-2. Fast approaching vehicle (TTC < threshold) MUST block lane change (rear_conflict == True).
-3. 3-level overtake thresholds (Aggressive 1.8s / Normal 2.5s / Safe 3.5s).
-4. Sensor offline / invalid data MUST fail-safe block (rear_conflict == True).
+TDD tests for P1-5 + P2-1: TTC 计算/门禁统一为生产单一实现。
+
+- P1-5: 旧测试 helper 在 ttc_list 为空时一律返回 99.0，与生产语义分叉
+  （生产仅"确为净空"才 99.0，有并排目标时为 0.0 失效哨兵）。迁移后
+  测试直接调用 rear_gate.calculate_rear_ttc 生产函数，并补
+  no_rear_target=False 用例。
+- P2-1: TTC 阈值映射 {0:1.8, 1:2.5, 2:3.5} 三处重复 → rear_gate.py
+  单一常量 REAR_TTC_THRESHOLDS。
 """
-import unittest
+from openpilot.selfdrive.controls.lib.rear_gate import (
+  REAR_TTC_THRESHOLDS,
+  calculate_rear_ttc,
+  evaluate_rear_gate,
+)
 
-def calculate_rear_ttc(main_lb_drel, lb_vrel, main_rb_drel, rb_vrel, sensor_alive=True):
-    """
-    Computes rear TTC:
-    - If sensors are alive, but no targets are approaching (ttc_list is empty): returns 99.0 (clear/safe).
-    - If approaching vehicle exists: returns min(TTC).
-    - If sensors are offline/dead: returns 0.0 (fail-safe unknown).
-    """
-    if not sensor_alive:
-        return 0.0
 
-    ttc_list = []
-    for d, v in [(main_lb_drel, lb_vrel), (main_rb_drel, rb_vrel)]:
-        if d is not None and abs(d) > 0 and v is not None and v < -0.1:
-            ttc_list.append((abs(d) / 1000.0) / abs(v))
+class TestRearTtcProduction:
 
-    return min(ttc_list) if ttc_list else 99.0
+  def test_clear_lane_returns_99(self):
+    # 两侧均无目标 + 雷达在线 + 无逼近 → 99.0 净空放行
+    ttc = calculate_rear_ttc(None, None, None, None, lidar_online=True)
+    assert ttc == 99.0
 
-def evaluate_rear_conflict(behind_ttc, overtake_mode, amap_alive=True):
-    """
-    Evaluates whether rear traffic conflicts with lane change:
-    - behind_ttc == 99.0: clear lane -> False (no conflict, permit)
-    - 0.0 < behind_ttc < threshold: fast approaching car -> True (conflict, block)
-    - behind_ttc <= 0.0 or not amap_alive: sensor dead/invalid -> True (fail-safe block)
-    """
-    if not amap_alive:
-        return True # fail-safe block
+  def test_approaching_vehicle_returns_min_ttc(self):
+    # 左后 -18m 以 -15m/s 逼近 → TTC = 1.2s
+    ttc = calculate_rear_ttc(-18000, -15.0, None, None, lidar_online=True)
+    assert abs(ttc - 1.2) < 0.01
 
-    mode = overtake_mode if overtake_mode in (0, 1, 2) else 1
-    thr = {0: 1.8, 1: 2.5, 2: 3.5}.get(mode, 2.5)
+  def test_parallel_target_is_not_clear_lane(self):
+    # P1-5 新增：有并排目标（drel 非 None 但 vrel 不逼近）→ 0.0 失效哨兵，
+    # 不得误判 99.0 净空（16aff86 fail-open 裁决的回归覆盖）
+    ttc = calculate_rear_ttc(5000, 0.0, None, None, lidar_online=True)
+    assert ttc == 0.0
 
-    if behind_ttc <= 0.0:
-        return True # invalid/offline sensor -> block
-    if behind_ttc >= 99.0:
-        return False # clear lane -> permit
+  def test_lidar_offline_is_sentinel_even_without_targets(self):
+    ttc = calculate_rear_ttc(None, None, None, None, lidar_online=False)
+    assert ttc == 0.0
 
-    return behind_ttc < thr
+  def test_fastest_of_both_sides_wins(self):
+    # 左后 TTC 3.0s / 右后 TTC 1.5s → 取最小 1.5s（最保守）
+    ttc = calculate_rear_ttc(-30000, -10.0, -15000, -10.0, lidar_online=True)
+    assert abs(ttc - 1.5) < 0.01
 
-class TestTtcAndLaneChangeGating(unittest.TestCase):
 
-    def test_empty_lane_permits_lane_change(self):
-        """F-32-01 Fix: On an empty lane with no approaching cars, lane change MUST NOT be blocked!"""
-        # Scenario: Sensors alive, but no rear cars detected
-        ttc = calculate_rear_ttc(main_lb_drel=None, lb_vrel=None, main_rb_drel=None, rb_vrel=None, sensor_alive=True)
-        self.assertEqual(ttc, 99.0, "Empty lane should produce 99.0 clear sentinel")
+class TestRearGateThresholds:
 
-        conflict = evaluate_rear_conflict(behind_ttc=ttc, overtake_mode=1, amap_alive=True)
-        self.assertFalse(conflict, "Empty lane with no cars MUST NOT block lane change!")
+  def test_threshold_constants_single_source(self):
+    # P2-1: 阈值常量唯一来源为 rear_gate.REAR_TTC_THRESHOLDS
+    assert REAR_TTC_THRESHOLDS == {0: 1.8, 1: 2.5, 2: 3.5}
 
-    def test_approaching_vehicle_blocks_lane_change(self):
-        """Fast approaching rear vehicle (TTC = 1.2s) MUST block lane change under Normal mode (2.5s)"""
-        # Scenario: Rear left vehicle at -18m approaching at -15m/s (TTC = 1.2s)
-        ttc = calculate_rear_ttc(main_lb_drel=-18000, lb_vrel=-15.0, main_rb_drel=None, rb_vrel=None, sensor_alive=True)
-        self.assertAlmostEqual(ttc, 1.2, places=2)
+  def test_clear_lane_permits(self):
+    block, audio = evaluate_rear_gate(True, 99.0, 1, True)
+    assert not block and not audio
 
-        conflict = evaluate_rear_conflict(behind_ttc=ttc, overtake_mode=1, amap_alive=True)
-        self.assertTrue(conflict, "Rear vehicle approaching at TTC 1.2s MUST block lane change!")
+  def test_fast_rear_car_blocks_and_alerts(self):
+    block, audio = evaluate_rear_gate(True, 1.0, 1, True)
+    assert block and audio
 
-    def test_three_level_overtake_threshold_boundaries(self):
-        """TTC = 2.0s boundary test across Aggressive (1.8s), Normal (2.5s), and Safe (3.5s)"""
-        ttc = 2.0
-        # Mode 0 (Aggressive, thr=1.8s): 2.0 >= 1.8 -> permit
-        self.assertFalse(evaluate_rear_conflict(behind_ttc=ttc, overtake_mode=0, amap_alive=True))
+  def test_invalid_ttc_failsafe_blocks_and_alerts(self):
+    block, audio = evaluate_rear_gate(True, 0.0, 1, True)
+    assert block and audio
 
-        # Mode 1 (Normal, thr=2.5s): 2.0 < 2.5 -> block
-        self.assertTrue(evaluate_rear_conflict(behind_ttc=ttc, overtake_mode=1, amap_alive=True))
+  def test_threshold_boundary_is_permit(self):
+    block, audio = evaluate_rear_gate(True, 2.5, 1, True)
+    assert not block and not audio
 
-        # Mode 2 (Safe, thr=3.5s): 2.0 < 3.5 -> block
-        self.assertTrue(evaluate_rear_conflict(behind_ttc=ttc, overtake_mode=2, amap_alive=True))
-
-    def test_sensor_offline_fail_safe_blocks(self):
-        """When sensors or amapNavi are dead, system MUST fail-safe block (rear_conflict == True)"""
-        # Sensor offline -> ttc = 0.0
-        ttc = calculate_rear_ttc(main_lb_drel=None, lb_vrel=None, main_rb_drel=None, rb_vrel=None, sensor_alive=False)
-        self.assertEqual(ttc, 0.0)
-        self.assertTrue(evaluate_rear_conflict(behind_ttc=ttc, overtake_mode=1, amap_alive=True))
-
-        # amapNavi service not alive
-        self.assertTrue(evaluate_rear_conflict(behind_ttc=99.0, overtake_mode=1, amap_alive=False))
-
-if __name__ == "__main__":
-    unittest.main()
+  def test_three_level_thresholds(self):
+    assert not evaluate_rear_gate(True, 2.0, 0, True)[0]  # Aggressive 1.8s: 2.0 放行
+    assert evaluate_rear_gate(True, 2.0, 1, True)[0]      # Normal 2.5s: 2.0 阻断
+    assert not evaluate_rear_gate(True, 3.0, 1, True)[0]  # Normal 2.5s: 3.0 放行
+    assert evaluate_rear_gate(True, 3.0, 2, True)[0]      # Safe 3.5s: 3.0 阻断

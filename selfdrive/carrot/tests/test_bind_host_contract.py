@@ -10,7 +10,6 @@ TDD Contract Test: 车机侧 UDP 接收端口必须可配置且默认对局域�
 """
 import os
 import re
-import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -20,18 +19,18 @@ def read(name):
         return f.read()
 
 
-class TestCarrotBindHost(unittest.TestCase):
+class TestCarrotBindHost:
 
     def test_amap_navi_bind_host_configurable(self):
         src = read("amap_navi.py")
-        self.assertIn('os.environ.get("CARROT_BIND_HOST", "0.0.0.0")', src)
+        assert 'os.environ.get("CARROT_BIND_HOST", "0.0.0.0")' in src
         for port in ("4210", "self.navi_remote_port", "self.lane_port", "self.listen_port"):
-            self.assertIn("bind((self.bind_host, %s))" % port, src, port)
+            assert "bind((self.bind_host, %s))" % port in src
 
     def test_carrot_man_bind_host_configurable(self):
         src = read("carrot_man.py")
-        self.assertIn('os.environ.get("CARROT_BIND_HOST", "0.0.0.0")', src)
-        self.assertIn("bind((self.bind_host, self.carrot_man_port))", src)
+        assert 'os.environ.get("CARROT_BIND_HOST", "0.0.0.0")' in src
+        assert "bind((self.bind_host, self.carrot_man_port))" in src
 
     def test_no_hardcoded_loopback_on_headunit_ports(self):
         patterns = [
@@ -44,16 +43,16 @@ class TestCarrotBindHost(unittest.TestCase):
         for name in ("amap_navi.py", "carrot_man.py"):
             src = read(name)
             for pat in patterns:
-                self.assertIsNone(re.search(pat, src), "%s still hardcodes %s" % (name, pat))
+                assert re.search(pat, src) is None, "%s still hardcodes %s" % (name, pat)
 
     def test_management_channels_stay_loopback(self):
         amap = read("amap_navi.py")
         man = read("carrot_man.py")
-        self.assertIn('socket.bind("tcp://127.0.0.1:7710")', man)
-        self.assertIn("sock.bind(('127.0.0.1', 12345))", man)
-        self.assertIn("host = '127.0.0.1'", man)
-        self.assertNotIn('bind(("0.0.0.0", 7710))', man)
-        self.assertIn("self.bind_host", amap)
+        assert 'socket.bind("tcp://127.0.0.1:7710")' in man
+        assert "sock.bind(('127.0.0.1', 12345))" in man
+        assert "host = '127.0.0.1'" in man
+        assert 'bind(("0.0.0.0", 7710))' not in man
+        assert "self.bind_host" in amap
 
 
 if __name__ == "__main__":

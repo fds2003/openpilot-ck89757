@@ -26,7 +26,7 @@ PARAM_KEY_WHITELIST = {
   "ShowDebugLog", "AutoCurveSpeedFactorH", "AutoCurveSpeedAggressivenessH",
   "SameSpiCamFilter", "StockBlinkerCtrl", "ExtBlinkerCtrlTest",
   "BlinkerMode", "LaneStabTime", "DynamicBlindRange", "DynamicBlindDistance",
-  "DisableBlindSpot", "BsdDelayTime", "SideBsdDelayTime",
+  "DisableBlindSpot", "RearRadarEnable", "BsdDelayTime", "SideBsdDelayTime",
   "SideRelDistTime", "SidevRelDistTime", "SideRadarMinDist",
   "LidarBsdDelayTime", "LidarFrontVDistTime", "LidarFrontVRelDistTime",
   "LidarBehindVDistTime", "LidarBehindVRelDistTime", "LaneLineDelayTime",

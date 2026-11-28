@@ -10,13 +10,12 @@ GREEN: after patch, the put is guarded by `if not sm['selfdriveState'].experimen
 """
 import os
 import re
-import unittest
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 LONG_PLAN = os.path.join(ROOT, "selfdrive", "controls", "lib", "longitudinal_planner.py")
 
 
-class TestF20ExpModeGating(unittest.TestCase):
+class TestF20ExpModeGating:
 
     def _read(self):
         with open(LONG_PLAN, encoding="utf-8") as f:
@@ -32,15 +31,11 @@ class TestF20ExpModeGating(unittest.TestCase):
           r"put_bool_nonblocking\(\s*[\"']ExperimentalMode[\"']\s*,\s*True\s*\)",
           text, re.DOTALL
         )
-        self.assertIsNotNone(m, "enter-branch put_bool_nonblocking(ExperimentalMode, True) not found")
+        assert m is not None
         block = m.group(0)
         # GREEN check: guard is present
         gated = re.search(r"if\s+not\s+sm\['selfdriveState'\]\.experimentalMode\s*:", block)
-        self.assertIsNotNone(
-          gated,
-          "F-20 RED: enter-branch put is not gated by `if not sm['selfdriveState'].experimentalMode`. "
-          "Apply carrot_f18_f22.patch."
-        )
+        assert gated is not None, "F-20 RED: enter-branch put is not gated by `if not sm['selfdriveState'].experimentalMode`. ""Apply carrot_f18_f22.patch."
 
     def test_exit_branch_gated_on_current_state(self):
         """F-20 RED: the exit-branch put_bool_nonblocking(False) must be guarded
@@ -51,14 +46,11 @@ class TestF20ExpModeGating(unittest.TestCase):
           r"put_bool_nonblocking\(\s*[\"']ExperimentalMode[\"']\s*,\s*False\s*\)",
           text, re.DOTALL
         )
-        self.assertIsNotNone(m, "exit-branch put_bool_nonblocking(ExperimentalMode, False) not found")
+        assert m is not None
         block = m.group(0)
         gated = re.search(r"if\s+sm\['selfdriveState'\]\.experimentalMode\s*:", block)
-        self.assertIsNotNone(
-          gated,
-          "F-20 RED: exit-branch put is not gated by `if sm['selfdriveState'].experimentalMode`. "
-          "Apply carrot_f18_f22.patch."
-        )
+        assert gated is not None, ("F-20 RED: exit-branch put is not gated by `if sm['selfdriveState'].experimentalMode`. "
+                                   "Apply carrot_f18_f22.patch.")
 
     def test_no_unconditional_put_in_exp_mode_blocks(self):
         """Ensure there is no bare put_bool_nonblocking(ExperimentalMode, ...) that
@@ -66,8 +58,8 @@ class TestF20ExpModeGating(unittest.TestCase):
         text = self._read()
         guarded_enter = len(re.findall(r"if\s+not\s+sm\['selfdriveState'\]\.experimentalMode\s*:\s*\n\s*self\.sys_params\.put_bool_nonblocking\(\s*[\"']ExperimentalMode[\"']\s*,\s*True\s*\)", text))
         guarded_exit  = len(re.findall(r"if\s+sm\['selfdriveState'\]\.experimentalMode\s*:\s*\n\s*self\.sys_params\.put_bool_nonblocking\(\s*[\"']ExperimentalMode[\"']\s*,\s*False\s*\)", text))
-        self.assertGreaterEqual(guarded_enter, 1, "Enter-branch gated put not found")
-        self.assertGreaterEqual(guarded_exit, 1, "Exit-branch gated put not found")
+        assert guarded_enter >= 1, "Enter-branch gated put not found"
+        assert guarded_exit >= 1, "Exit-branch gated put not found"
 
 if __name__ == "__main__":
     unittest.main()

@@ -650,7 +650,20 @@
       "max": 1,
       "default": 0,
       "unit": 1
-    },    
+    },
+    {
+      "group": "启动",
+      "name": "CarrotEchoCmdEnable",
+      "title": "echo_cmd远程命令开关",
+      "descr": "0:关闭(默认),1:允许车机经ZMQ 7710调用白名单命令(tmux_capture/params_dump)；行驶中始终锁定(423)，需重启生效",
+      "egroup": "START",
+      "etitle": "CarrotEchoCmdEnable",
+      "edescr": "Allow whitelisted remote echo_cmd via ZMQ 7710 (tmux_capture/params_dump). Locked (423) while onroad. Reboot required.",
+      "min": 0,
+      "max": 1,
+      "default": 0,
+      "unit": 1
+    },
     {
       "group": "巡航",
       "name": "AutoSpeedUptoRoadSpeedLimit",
@@ -989,8 +1002,7 @@
       "default": 89,
       "unit": 1
     },
-
-        {
+    {
       "group": "启动",
       "name": "HyundaiCameraSCC",
       "title": "HYUNDAI: CAMERA SCC",

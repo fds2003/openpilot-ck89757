@@ -513,6 +513,18 @@
                 uiType: "number",
                 category: "公共参数设置"
             },
+            "CarrotEchoCmdEnable": {
+                chineseName: "echo_cmd远程命令开关",
+                defaultValue: 0,
+                description: "0:关闭(默认),1:允许车机经ZMQ 7710调用白名单命令(tmux_capture/params_dump)；行驶中始终锁定(423)",
+                inputRange: [0, 1],
+                uiType: "select",
+                options: [
+                    { value: 0, text: "关闭" },
+                    { value: 1, text: "开启" }
+                ],
+                category: "公共参数设置"
+            },
             "LaneStabTime": {
                 chineseName: "车道数稳定时间(10x0.1s)",
                 defaultValue: 50,
@@ -557,6 +569,18 @@
                 options: [
                     { value: 0, text: "不禁用原车盲区" },
                     { value: 1, text: "禁用原车盲区" }
+                ],
+                category: "公共参数设置"
+            },
+            "RearRadarEnable": {
+                chineseName: "后向雷达已安装(0)",
+                defaultValue: 0,
+                description: "0:未安装后向雷达(不播报后方来车,默认不允许自动变道),1:已安装(启用后方TTC门禁)",
+                inputRange: [0, 1],
+                uiType: "select",
+                options: [
+                    { value: 0, text: "未安装后向雷达" },
+                    { value: 1, text: "已安装后向雷达" }
                 ],
                 category: "公共参数设置"
             },

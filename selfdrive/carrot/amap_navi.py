@@ -11,6 +11,7 @@ import cereal.messaging as messaging
 from openpilot.common.realtime import Ratekeeper
 from openpilot.system.hardware import PC
 from openpilot.selfdrive.carrot.config import UnifiedParams
+from openpilot.selfdrive.controls.lib.rear_gate import calculate_rear_ttc
 from openpilot.selfdrive.carrot.udp_trust import evaluate as udp_trust_evaluate, parse_allowed
 from openpilot.selfdrive.carrot.traffic_light import BRIDGE_TL_PORT, state_from_wire
 from openpilot.common.swaglog import cloudlog
@@ -186,6 +187,49 @@ def round1(x):
   return round(float(x), 1)
 def round2(x):
   return round(float(x), 2)
+
+
+def parse_remote_command(json_obj, shared_data, now=None):
+  """解析车机指令（P1-4：index=0 是车机重启后首条指令的合法序号，
+  不得因 falsy 判断被丢弃——显式 `if "index" in json_obj` 取键）。
+
+  单调 seq 去重 + CANCEL 映射 + SPEED_LIMIT 速度提取 + OVERTAKE 参数钳位。
+  调用方（_update_command）负责 app_ip 校验与加锁；测试直连本函数复用
+  生产逻辑，杜绝抄写副本语义漂移。
+  """
+  if now is None:
+    now = time.time()
+  raw_idx = json_obj["index"] if "index" in json_obj else json_obj.get("seq")
+  try:
+    idx = int(raw_idx)
+  except (TypeError, ValueError):
+    idx = None
+  if now - getattr(shared_data, "last_cmd_time", 0.0) > 10.0:
+    shared_data.cmd_index = -1  # 超过 10 秒无指令，允许车机重启重置序号
+  shared_data.last_cmd_time = now
+
+  if idx is not None and (idx > shared_data.cmd_index or shared_data.cmd_index == -1):
+    shared_data.cmd_index = idx  # 单调递增，旧包/重放包不转发
+    if "cmd" in json_obj:
+      c = json_obj.get("cmd")
+      shared_data.remote_cmd = "CANCEL" if c == "CANCEL_LANE_CHANGE" else c
+      if c == "SPEED_LIMIT":
+        # 速度值优先取 v_cruise；兼容旧格式时 arg 必须是可解析的十进制数，绝不把车道码当速度
+        v = json_obj.get("v_cruise", json_obj.get("arg", ""))
+        try:
+          shared_data.remote_arg = str(int(float(v)))
+        except (TypeError, ValueError):
+          shared_data.remote_arg = ""
+      else:
+        shared_data.remote_arg = json_obj.get("direction") or json_obj.get("arg")
+    raw = json_obj.get("param", json_obj.get("overtake_mode", None))
+    if raw is not None:
+      try:
+        r = int(raw)
+        if r in (0, 1, 2):
+          shared_data.overtake_mode = r
+      except (TypeError, ValueError):
+        pass
 
 # =======================================================================================
 # Q-3: capnp 字段统一适配层
@@ -391,29 +435,12 @@ class AmapNaviServ:
     msg.amapNavi.rfDrel = 0 if (self.shared_data.main_rf_drel is None) else int(round(self.shared_data.main_rf_drel/100))
     msg.amapNavi.rbDrel = 0 if (self.shared_data.main_rb_drel is None) else int(round(self.shared_data.main_rb_drel/100))
     msg.amapNavi.overtakeMode = self.shared_data.overtake_mode
-    # 两侧后向雷达都参与，取最小 TTC（最保守）
-    ttc_list = []
-    for side in ("lb", "rb"):
-      d = getattr(self.shared_data, f"main_{side}_drel", None)
-      v = getattr(self.shared_data, f"{side}_vrel", None)
-      if d is not None and abs(d) > 0 and v is not None and v < -0.1:
-        ttc_list.append((abs(d) / 1000.0) / abs(v))
-    # P0 裁决（M-12 补强）：仅当"确为净空"才用 99.0 放行，其余一律 0.0 失效阻断。
-    # 净空需同时满足：
-    #   1) 两侧后向均无目标：main_lb_drel / main_rb_drel 均为 None。
-    #      发布端 lbDrelValid / rbDrelValid 等价于这两个字段非 None；
-    #      lidar_data_timeout 在 1 秒内无更新即清空，数据新鲜度由该现成机制保证。
-    #   2) 两侧雷达在线（lidar_l and lidar_r）：由 _clients 每帧重算，
-    #      _clean_clients_thread 以 last_seen < 1.0s 淘汰断流客户端，断流即离线。
-    #   3) ttc_list 为空（无后车逼近）。
-    # 关键修正：main_*_drel 非 None 表示"检测到目标"，即使 vrel≈0（并排车）也不得
-    # 判净空。16aff86 的 sensor_ready 把"有目标"当成"传感器就绪"的正面证据，
-    # 会把贴身并行车辆当成空车道放行，这是本次裁决要消除的 fail-open。
-    no_rear_target = (self.shared_data.main_lb_drel is None and
-                      self.shared_data.main_rb_drel is None)
-    lidar_online = self.shared_data.lidar_l and self.shared_data.lidar_r
-    clear_lane = (not ttc_list) and no_rear_target and lidar_online
-    ttc = min(ttc_list) if ttc_list else (99.0 if clear_lane else 0.0)
+    # P1-5/P2-1: TTC 计算收敛至 rear_gate.calculate_rear_ttc（生产单一实现，
+    # 语义注释随函数迁移；净空裁决与 0.0 失效哨兵行为不变）
+    ttc = calculate_rear_ttc(
+      self.shared_data.main_lb_drel, self.shared_data.lb_vrel,
+      self.shared_data.main_rb_drel, self.shared_data.rb_vrel,
+      self.shared_data.lidar_l and self.shared_data.lidar_r)
     self.shared_data.behind_ttc = ttc
     msg.amapNavi.lidarBehindVdistTime = float(ttc)
 
@@ -1189,38 +1216,7 @@ class AmapNaviServ:
     if self.shared_data.app_ip is not None and ip != self.shared_data.app_ip:
       return  # 拒绝热点内第三方注入；本机回环测试请在 fixture 中设置 app_ip
     with self._lock:
-      idx = json_obj.get("index") or json_obj.get("seq")
-      try:
-        idx = int(idx)
-      except (TypeError, ValueError):
-        idx = None
-      now = time.time()
-      if now - getattr(self.shared_data, "last_cmd_time", 0.0) > 10.0:
-        self.shared_data.cmd_index = -1  # 超过 10 秒无指令，允许车机重启重置序号
-      self.shared_data.last_cmd_time = now
-
-      if idx is not None and (idx > self.shared_data.cmd_index or self.shared_data.cmd_index == -1):
-        self.shared_data.cmd_index = idx  # 单调递增，旧包/重放包不转发
-        if "cmd" in json_obj:
-          c = json_obj.get("cmd")
-          self.shared_data.remote_cmd = "CANCEL" if c == "CANCEL_LANE_CHANGE" else c
-          if c == "SPEED_LIMIT":
-            # 速度值优先取 v_cruise；兼容旧格式时 arg 必须是可解析的十进制数，绝不把车道码当速度
-            v = json_obj.get("v_cruise", json_obj.get("arg", ""))
-            try:
-              self.shared_data.remote_arg = str(int(float(v)))
-            except (TypeError, ValueError):
-              self.shared_data.remote_arg = ""
-          else:
-            self.shared_data.remote_arg = json_obj.get("direction") or json_obj.get("arg")
-        raw = json_obj.get("param", json_obj.get("overtake_mode", None))
-        if raw is not None:
-          try:
-            r = int(raw)
-            if r in (0, 1, 2):
-              self.shared_data.overtake_mode = r
-          except (TypeError, ValueError):
-            pass
+      parse_remote_command(json_obj, self.shared_data)
 
   # ----------------------
   # 更新雷达/摄像头盲区与距离数据
@@ -1758,8 +1754,10 @@ class AmapNaviServ:
           if self.lane_online:
             ext_state += 1
           self.shared_data.ext_state = ext_state
-      except (KeyError, RuntimeError, Exception) as e:
-        print(f"[_clean_clients_thread] exception: {e}, continue")
+      except (KeyError, RuntimeError, TypeError) as e:
+        cloudlog.warning(f"[_clean_clients_thread] 预期异常: {e}")
+      except Exception:
+        cloudlog.exception("[_clean_clients_thread] 非预期异常（附栈追踪）")
       time.sleep(0.2)
 
   def navi_broadcast_info(self):

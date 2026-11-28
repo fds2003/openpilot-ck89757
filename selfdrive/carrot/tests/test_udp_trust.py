@@ -9,7 +9,6 @@
 - 本地 IP 未知或非法时一律拒绝（fail-closed）。
 """
 import os
-import unittest
 
 from selfdrive.carrot.udp_trust import evaluate, parse_allowed, same_subnet
 
@@ -21,68 +20,68 @@ def read(rel):
         return f.read()
 
 
-class TestSameSubnet(unittest.TestCase):
+class TestSameSubnet:
 
     def test_same_24(self):
-        self.assertTrue(same_subnet("192.168.43.5", "192.168.43.120"))
+        assert same_subnet("192.168.43.5", "192.168.43.120")
 
     def test_different_24(self):
-        self.assertFalse(same_subnet("192.168.3.5", "192.168.43.120"))
+        assert not same_subnet("192.168.3.5", "192.168.43.120")
 
     def test_invalid_local(self):
-        self.assertFalse(same_subnet("192.168.43.5", ""))
+        assert not same_subnet("192.168.43.5", "")
 
     def test_ipv6_uses_64(self):
-        self.assertTrue(same_subnet("fe80::1", "fe80::2"))
+        assert same_subnet("fe80::1", "fe80::2")
 
 
-class TestEvaluate(unittest.TestCase):
+class TestEvaluate:
 
     def test_loopback_always_trusted(self):
-        self.assertEqual(evaluate("127.0.0.1", "192.168.43.120", set(), set()), (True, False))
+        assert evaluate("127.0.0.1", "192.168.43.120", set(), set()) == (True, False)
 
     def test_same_subnet_learned_when_no_allowlist(self):
-        self.assertEqual(evaluate("192.168.43.5", "192.168.43.120", set(), set()), (True, True))
+        assert evaluate("192.168.43.5", "192.168.43.120", set(), set()) == (True, True)
 
     def test_other_subnet_rejected(self):
-        self.assertEqual(evaluate("10.0.0.9", "192.168.43.120", set(), set()), (False, False))
+        assert evaluate("10.0.0.9", "192.168.43.120", set(), set()) == (False, False)
 
     def test_learned_ip_trusted(self):
-        self.assertEqual(evaluate("10.0.0.9", "192.168.43.120", {"10.0.0.9"}, set()), (True, False))
+        assert evaluate("10.0.0.9", "192.168.43.120", {"10.0.0.9"}, set()) == (True, False)
 
     def test_allowlist_strict_mode(self):
         allowed = {"192.168.43.5"}
-        self.assertEqual(evaluate("192.168.43.5", "192.168.43.120", set(), allowed), (True, False))
+        assert evaluate("192.168.43.5", "192.168.43.120", set(), allowed) == (True, False)
         # 显式白名单存在时，同网段未列出的主机也不再自动学习
-        self.assertEqual(evaluate("192.168.43.6", "192.168.43.120", set(), allowed), (False, False))
+        assert evaluate("192.168.43.6", "192.168.43.120", set(), allowed) == (False, False)
 
     def test_unknown_local_ip_fails_closed(self):
-        self.assertEqual(evaluate("192.168.43.5", "", set(), set()), (False, False))
+        assert evaluate("192.168.43.5", "", set(), set()) == (False, False)
 
 
-class TestParseAllowed(unittest.TestCase):
+class TestParseAllowed:
 
     def test_none(self):
-        self.assertEqual(parse_allowed(None), set())
+        assert parse_allowed(None) == set()
 
     def test_bytes(self):
-        self.assertEqual(parse_allowed(b"192.168.43.5, 192.168.43.6"), {"192.168.43.5", "192.168.43.6"})
+        assert parse_allowed(b"192.168.43.5, 192.168.43.6") == {"192.168.43.5", "192.168.43.6"}
 
     def test_empty_entries(self):
-        self.assertEqual(parse_allowed(" , 10.0.0.1 , "), {"10.0.0.1"})
+        assert parse_allowed(" , 10.0.0.1 , ") == {"10.0.0.1"}
 
 
-class TestWiring(unittest.TestCase):
+class TestWiring:
 
     def test_amap_navi_uses_trust_policy(self):
         text = read("selfdrive/carrot/amap_navi.py")
-        self.assertIn("udp_trust", text)
-        self.assertIn("CarrotUdpAllowedIps", text)
+        assert "udp_trust" in text
+        assert "CarrotUdpAllowedIps" in text
 
     def test_carrot_man_uses_trust_policy(self):
         text = read("selfdrive/carrot/carrot_man.py")
-        self.assertIn("udp_trust", text)
-        self.assertIn("CarrotUdpAllowedIps", text)
+        assert "udp_trust" in text
+        assert "CarrotUdpAllowedIps" in text
 
 
 if __name__ == "__main__":

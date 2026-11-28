@@ -9,7 +9,6 @@ C3 会在车机断流后继续消费冻结帧。频率必须与发布线程实�
 本仓库依赖 capnp，cereal 包无法直接 import，故按文件路径加载纯数据模块。
 """
 import importlib.util
-import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -26,26 +25,23 @@ def _load_services():
 services = _load_services()
 
 
-class TestCooperativeServiceFrequencies(unittest.TestCase):
+class TestCooperativeServiceFrequencies:
 
   def test_amap_navi_declares_20hz(self):
     entry = services._services["amapNavi"]
-    self.assertTrue(entry[0], "amapNavi 必须记录进日志")
-    self.assertEqual(20., entry[1], "amapNavi 实发 20Hz，声明频率必须一致")
+    assert entry[0], "amapNavi 必须记录进日志"
+    assert 20. == entry[1], "amapNavi 实发 20Hz，声明频率必须一致"
 
   def test_carrot_man_declares_10hz(self):
     entry = services._services["carrotMan"]
-    self.assertTrue(entry[0], "carrotMan 必须记录进日志")
-    self.assertEqual(10., entry[1], "carrotMan 周期 10Hz，声明频率必须一致")
+    assert entry[0], "carrotMan 必须记录进日志"
+    assert 10. == entry[1], "carrotMan 周期 10Hz，声明频率必须一致"
 
   def test_public_service_list_keeps_frequency(self):
     """SERVICE_LIST 由 _services 派生，两侧不得漂移"""
     for name in ("amapNavi", "carrotMan"):
-      self.assertEqual(services._services[name][1],
-                       services.SERVICE_LIST[name].frequency,
-                       f"{name} SERVICE_LIST 与 _services 不一致")
-      self.assertGreater(services.SERVICE_LIST[name].frequency, 0.,
-                         f"{name} 频率为 0 会让 sm.alive 恒真")
+      assert services._services[name][1] == services.SERVICE_LIST[name].frequency, f"{name} SERVICE_LIST 与 _services 不一致"
+      assert services.SERVICE_LIST[name].frequency > 0., f"{name} 频率为 0 会让 sm.alive 恒真"
 
 
 if __name__ == "__main__":

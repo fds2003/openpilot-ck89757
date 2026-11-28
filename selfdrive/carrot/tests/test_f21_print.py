@@ -14,7 +14,6 @@ GREEN: hot block logs via cloudlog.debug AND the showDebugLog gate is intact.
 """
 import os
 import re
-import unittest
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 CARROT_SERV = os.path.join(ROOT, "selfdrive", "carrot", "carrot_serv.py")
@@ -25,30 +24,21 @@ def read():
     return f.read()
 
 
-class TestF21PrintToCloudlog(unittest.TestCase):
+class TestF21PrintToCloudlog:
 
   def test_cloudlog_imported(self):
     text = read()
-    self.assertIn(
-      "from openpilot.common.swaglog import cloudlog", text,
-      "F-21 RED: cloudlog import missing."
-    )
+    assert "from openpilot.common.swaglog import cloudlog" in text, "F-21 RED: cloudlog import missing."
 
   def test_hot_block_keep_now_uses_cloudlog(self):
     """The blind-spot keep block ('atc_bsd keep:') MUST log via cloudlog.debug."""
     text = read()
-    self.assertIn(
-      'cloudlog.debug(f"atc_bsd keep:', text,
-      "F-21: blind-spot keep block should use cloudlog.debug, not print()."
-    )
+    assert 'cloudlog.debug(f"atc_bsd keep:' in text, "F-21: blind-spot keep block should use cloudlog.debug, not print()."
 
   def test_showdebuglog_gate_preserved(self):
     """The showDebugLog gate MUST remain (F-21 must not cancel the switch)."""
     text = read()
-    self.assertRegex(
-      text, r"if \(self\.showDebugLog & 1\) > 0:",
-      "F-21 RED: showDebugLog gate was removed/corrupted. Gate must stay."
-    )
+    assert re.search(r"if \(self\.showDebugLog & 1\) > 0:", text)
 
 if __name__ == "__main__":
     unittest.main()

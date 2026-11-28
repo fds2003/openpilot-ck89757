@@ -14,6 +14,7 @@ TDD tests for 19号文档 C3 端「近期」档质量修复（Q-2 / Q-7 / Q-8）
 stub 模式复用 test_quality_fixes_q4_q5_q6.py（_install_stubs / _SM / _ModelV2
 / _CarrotMan / _Meta / _LC / _mk_serv），两文件独立可跑。
 """
+import pytest
 import importlib.util
 import json
 import os
@@ -22,7 +23,6 @@ import re
 import socket
 import sys
 import types
-import unittest
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 AMAP_NAVI = os.path.join(ROOT, "selfdrive", "carrot", "amap_navi.py")
@@ -77,21 +77,19 @@ def _mk_serv_variant(amap, radar, cruise_valid, active):
   return serv
 
 
-class TestQ8NamingAndEncapsulation(unittest.TestCase):
+class TestQ8NamingAndEncapsulation:
   """Q-8: 命名清理 + 锁/队列内聚。"""
 
-  @classmethod
-  def setUpClass(cls):
-    cls.amap_navi = _load_fresh()
+  amap_navi = _load_fresh()
 
   def test_round1_round2_behavior(self):
     a = self.amap_navi
-    self.assertEqual(a.round1(3.456), 3.5)
-    self.assertEqual(a.round2(3.456), 3.46)
+    assert a.round1(3.456) == 3.5
+    assert a.round2(3.456) == 3.46
 
   def test_f1_f2_removed(self):
-    self.assertFalse(hasattr(self.amap_navi, "f1"), "f1 应已重命名为 round1")
-    self.assertFalse(hasattr(self.amap_navi, "f2"), "f2 应已重命名为 round2")
+    assert not hasattr(self.amap_navi, "f1"), "f1 应已重命名为 round1"
+    assert not hasattr(self.amap_navi, "f2"), "f2 应已重命名为 round2"
 
   def test_init_sets_instance_lock_and_queue(self):
     """__init__ 应设置 self._lock（threading.Lock）与 self._data_queue（maxsize=5 队列）。
@@ -101,36 +99,30 @@ class TestQ8NamingAndEncapsulation(unittest.TestCase):
     """
     amap = self.amap_navi
     src = open(AMAP_NAVI, encoding="utf-8").read()
-    self.assertIn("self._lock = threading.Lock()", src, "Q-8 RED: __init__ 应设置 self._lock")
-    self.assertIn("self._data_queue = queue.Queue(5)", src,
-                  "Q-8 RED: __init__ 应设置 self._data_queue(maxsize=5)")
+    assert "self._lock = threading.Lock()" in src, "Q-8 RED: __init__ 应设置 self._lock"
+    assert "self._data_queue = queue.Queue(5)" in src, "Q-8 RED: __init__ 应设置 self._data_queue(maxsize=5)"
 
   def test_no_module_level_lock_or_data_queue(self):
     src = open(AMAP_NAVI, encoding="utf-8").read()
     import re
     # 排除注释行后检查裸赋值（模块级）是否残留
     code = "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
-    self.assertIsNone(re.search(r"^lock = threading\.Lock\(\)", code, re.M),
-                      "Q-8 RED: 模块级裸 lock 赋值应已移入 __init__")
-    self.assertIsNone(re.search(r"^data_queue = queue\.Queue\(\)", code, re.M),
-                      "Q-8 RED: 模块级裸 data_queue 赋值应已移入 __init__")
+    assert re.search(r"^lock = threading\.Lock\(\)", code, re.M) is None
+    assert re.search(r"^data_queue = queue\.Queue\(\)", code, re.M) is None
 
   def test_lock_only_used_via_instance_attr(self):
     src = open(AMAP_NAVI, encoding="utf-8").read()
     # 所有 with lock: 应已改为 with self._lock:
-    self.assertNotIn("with lock:", src, "Q-8 RED: 裸 with lock: 应全部改为 self._lock")
+    assert "with lock:" not in src, "Q-8 RED: 裸 with lock: 应全部改为 self._lock"
 
 
-class TestQ7ParseExceptionLayering(unittest.TestCase):
+class TestQ7ParseExceptionLayering:
   """Q-7: UDP 解析路径异常分层。"""
 
-  @classmethod
-  def setUpClass(cls):
-    cls.amap_navi = _load_fresh()
+  amap_navi = _load_fresh()
 
   def test_imports_cloudlog(self):
-    self.assertTrue(hasattr(self.amap_navi, "cloudlog"),
-                    "Q-7 RED: amap_navi 应 import cloudlog")
+    assert hasattr(self.amap_navi, "cloudlog"), "Q-7 RED: amap_navi 应 import cloudlog"
 
   def test_malformed_json_does_not_raise(self):
     """喂坏 JSON 给 _process_single_packet：分层捕获后不抛出、不中断。"""
@@ -150,36 +142,30 @@ class TestQ7ParseExceptionLayering(unittest.TestCase):
       try:
         serv._process_single_packet(bad, ("127.0.0.1", 4211))
       except Exception as e:
-        self.fail(f"Q-7 RED: 坏包 {bad!r} 解析应被捕获而不抛出: {e}")
+        pytest.fail(f"Q-7 RED: 坏包 {bad!r} 解析应被捕获而不抛出: {e}")
 
   def test_keyerror_goes_to_cloudlog_warning(self):
     """解析后 KeyError 分支应走 cloudlog.warning（带来源 IP），不再裸 print。"""
     src = open(AMAP_NAVI, encoding="utf-8").read()
-    self.assertIn("except KeyError as e:", src, "Q-7 RED: 解析路径应分层捕获 KeyError")
-    self.assertIn('cloudlog.warning(f"amap_navi KeyError from {ip}', src,
-                  "Q-7 RED: KeyError 分支应调用 cloudlog.warning（带来源 IP）")
+    assert "except KeyError as e:" in src, "Q-7 RED: 解析路径应分层捕获 KeyError"
+    assert 'cloudlog.warning(f"amap_navi KeyError from {ip}' in src, "Q-7 RED: KeyError 分支应调用 cloudlog.warning（带来源 IP）"
 
   def test_fallback_is_cloudlog_exception(self):
     """解析路径兜底 except 应使用 cloudlog.exception（完整 traceback）。"""
     src = open(AMAP_NAVI, encoding="utf-8").read()
-    self.assertIn('cloudlog.exception(f"amap_navi packet error from {ip}")', src,
-                  "Q-7 RED: 解析路径兜底应为 cloudlog.exception")
+    assert 'cloudlog.exception(f"amap_navi packet error from {ip}")' in src, "Q-7 RED: 解析路径兜底应为 cloudlog.exception"
 
   def test_malformed_counter(self):
     """JSONDecodeError 分支应记录 malformed 计数（实例属性）。"""
     src = open(AMAP_NAVI, encoding="utf-8").read()
-    self.assertIn("except (json.JSONDecodeError, UnicodeDecodeError):", src,
-                  "Q-7 RED: 应显式捕获 JSONDecodeError/UnicodeDecodeError")
-    self.assertIn("self._malformed_count += 1", src,
-                  "Q-7 RED: 坏包分支应累加 _malformed_count")
+    assert "except (json.JSONDecodeError, UnicodeDecodeError):" in src, "Q-7 RED: 应显式捕获 JSONDecodeError/UnicodeDecodeError"
+    assert "self._malformed_count += 1" in src, "Q-7 RED: 坏包分支应累加 _malformed_count"
 
 
-class TestQ2MessageRefactor(unittest.TestCase):
+class TestQ2MessageRefactor:
   """Q-2: 公共逻辑抽取后广播帧黄金值回归（重构前取，保证逐字段一致）。"""
 
-  @classmethod
-  def setUpClass(cls):
-    cls.amap_navi = _load_fresh()
+  amap_navi = _load_fresh()
 
   def _variants(self):
     # (名称, radar, cruise_valid, selfdrive_active)
@@ -214,9 +200,9 @@ class TestQ2MessageRefactor(unittest.TestCase):
   def _check(self, msg, golden, ctx):
     for k, v in golden.items():
       if v is None:
-        self.assertNotIn(k, msg, f"{ctx}: 键 {k} 应缺席")
+        assert k not in msg, f"{ctx}: 键 {k} 应缺席"
       else:
-        self.assertEqual(msg.get(k), v, f"{ctx}: 键 {k} 应等于 {v!r}")
+        assert msg.get(k) == v, f"{ctx}: 键 {k} 应等于 {v!r}"
 
   def test_golden_regression(self):
     amap = self.amap_navi
@@ -236,13 +222,12 @@ class TestQ2MessageRefactor(unittest.TestCase):
     sd.lf_drel[0] = 5000
     serv = _mk_serv(sd)
     msg = json.loads(serv.make_navi_message())
-    self.assertEqual(msg.get("lf_drel"), 5000, "lf_drel idx0 应仍由 fields 循环广播")
+    assert msg.get("lf_drel") == 5000, "lf_drel idx0 应仍由 fields 循环广播"
 
   def test_helper_methods_exist(self):
     amap = self.amap_navi
     for meth in ("_build_base_fields", "_apply_cruise_state"):
-      self.assertTrue(callable(getattr(amap.AmapNaviServ, meth, None)),
-                      f"Q-2 RED: 应存在 AmapNaviServ.{meth} 辅助方法")
+      assert callable(getattr(amap.AmapNaviServ, meth, None)), f"Q-2 RED: 应存在 AmapNaviServ.{meth} 辅助方法"
 
 
 if __name__ == "__main__":

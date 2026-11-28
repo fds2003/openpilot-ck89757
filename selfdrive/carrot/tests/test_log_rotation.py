@@ -5,7 +5,7 @@ selfdrive/carrot/tests/test_log_rotation.py
 TDD 单元测试套件：C3 日志滚动周期 (7天)、目录配额 (200MB) 与 FIFO 淘汰断言
 =====================================================================
 """
-import unittest
+import pytest
 import os
 import shutil
 import tempfile
@@ -35,12 +35,12 @@ def run_log_rotation_cleanup(log_dir, max_size_bytes=200 * 1024 * 1024, retentio
       os.remove(oldest)
   return total_size
 
-class TestLogRotation(unittest.TestCase):
+class TestLogRotation:
 
-  def setUp(self):
+  @pytest.fixture(autouse=True)
+  def _setup_teardown(self):
     self.test_dir = tempfile.mkdtemp(prefix="test_c3_logs_")
-
-  def tearDown(self):
+    yield
     shutil.rmtree(self.test_dir, ignore_errors=True)
 
   def test_retention_period_7_days(self):
@@ -65,8 +65,8 @@ class TestLogRotation(unittest.TestCase):
     run_log_rotation_cleanup(self.test_dir, retention_secs=7*86400)
 
     # 断言
-    self.assertFalse(os.path.exists(old_file), "10 天前的旧日志应被自动物理删除！")
-    self.assertTrue(os.path.exists(recent_file), "3 天内的日志必须被正常保留！")
+    assert not os.path.exists(old_file), "10 天前的旧日志应被自动物理删除！"
+    assert os.path.exists(recent_file), "3 天内的日志必须被正常保留！"
 
   def test_directory_quota_fifo_eviction(self):
     """断言 2: 当目录总体积超过限额 (模拟 100KB) 时，按 FIFO 淘汰最老文件"""
@@ -88,12 +88,12 @@ class TestLogRotation(unittest.TestCase):
     remaining_size = run_log_rotation_cleanup(self.test_dir, max_size_bytes=mock_quota)
 
     # 断言：总大小必须下降到配额的 75% (75KB) 以下
-    self.assertLessEqual(remaining_size, mock_quota * 0.75)
+    assert remaining_size <= mock_quota * 0.75
     # 最老的 file_0 和 file_1 应最先被淘汰
-    self.assertFalse(os.path.exists(created_files[0]), "最老的文件 file_0 必须首先被淘汰！")
-    self.assertFalse(os.path.exists(created_files[1]), "次老的文件 file_1 必须被淘汰！")
+    assert not os.path.exists(created_files[0]), "最老的文件 file_0 必须首先被淘汰！"
+    assert not os.path.exists(created_files[1]), "次老的文件 file_1 必须被淘汰！"
     # 最新的 file_4 必须存活
-    self.assertTrue(os.path.exists(created_files[4]), "最新的文件 file_4 必须完好保存！")
+    assert os.path.exists(created_files[4]), "最新的文件 file_4 必须完好保存！"
 
 if __name__ == "__main__":
   unittest.main()

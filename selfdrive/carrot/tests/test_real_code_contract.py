@@ -10,7 +10,6 @@ real handler ever regresses or the clamp is removed.
 import ast
 import contextlib
 import io
-import unittest
 from pathlib import Path
 
 SERV_PATH = Path(__file__).resolve().parents[1] / "carrot_serv.py"
@@ -46,40 +45,37 @@ def _run(arg, current=80):
     return serv
 
 
-class TestRealCodeContract(unittest.TestCase):
+class TestRealCodeContract:
 
     def test_real_source_carries_30kph_clamp(self):
         # Guard: prove we are testing the real handler, not a shadow copy.
-        self.assertIn("if 0 < speed_kph < 30:", _BLOCK)
-        self.assertIn("speed_kph = 30", _BLOCK)
+        assert "if 0 < speed_kph < 30:" in _BLOCK
+        assert "speed_kph = 30" in _BLOCK
 
     def test_speeds_below_30_clamp_to_30(self):
         for arg in ("1", "15", "29"):
-            with self.subTest(arg=arg):
-                serv = _run(arg)
-                self.assertEqual(serv.nRoadLimitSpeed, 30)
-                self.assertEqual(serv.nRoadLimitSpeed_last, 30)
+              serv = _run(arg)
+              assert serv.nRoadLimitSpeed == 30
+              assert serv.nRoadLimitSpeed_last == 30
 
     def test_boundary_and_above_unchanged(self):
         for arg, expected in (("30", 30), ("31", 31), ("100", 100), ("160", 160)):
-            with self.subTest(arg=arg):
-                serv = _run(arg)
-                self.assertEqual(serv.nRoadLimitSpeed, expected)
-                self.assertEqual(serv.nRoadLimitSpeed_last, expected)
+              serv = _run(arg)
+              assert serv.nRoadLimitSpeed == expected
+              assert serv.nRoadLimitSpeed_last == expected
 
     def test_invalid_and_out_of_range_keep_previous(self):
         for arg in ("161", "-1", "abc", None):
-            with self.subTest(arg=arg):
-                serv = _run(arg, current=80)
-                self.assertEqual(serv.nRoadLimitSpeed, 80)
-                self.assertEqual(serv.nRoadLimitSpeed_last, 80)
+              serv = _run(arg, current=80)
+              assert serv.nRoadLimitSpeed == 80
+              assert serv.nRoadLimitSpeed_last == 80
 
     def test_zero_is_accepted_as_zero(self):
         # 6986b10 clamps only 0 < x < 30; 0 is currently accepted verbatim.
         # If the clamp is later widened to include 0, update this contract.
         serv = _run("0")
-        self.assertEqual(serv.nRoadLimitSpeed, 0)
-        self.assertEqual(serv.nRoadLimitSpeed_last, 0)
+        assert serv.nRoadLimitSpeed == 0
+        assert serv.nRoadLimitSpeed_last == 0
 
 
 if __name__ == "__main__":
