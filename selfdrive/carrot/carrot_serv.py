@@ -366,10 +366,11 @@ class CarrotServ:
         handler(self.carrotArg)
 
     self.traffic_light_q.append((-1, -1, "none", 0.0))
-    self.traffic_light_count -= 1
-    if self.traffic_light_count < 0:
-      self.traffic_light_count = -1
-      self.traffic_state = 0
+    if self.traffic_light_count >= 0:
+      self.traffic_light_count -= 1
+      if self.traffic_light_count < 0:
+        self.traffic_light_count = -1
+        self.traffic_state = 0
 
   def _handle_detect_command(self, xArg):
     elements = [e.strip() for e in xArg.split(',')]
@@ -684,13 +685,13 @@ class CarrotServ:
       elif (close_time < 6 or d < 20) and speed_up_enable and not decel_priority: #距离小于20m并且6秒后可追上前车，并且车本可加速，加速32km/h追上前车
         delta_v = 9.0
       else: # 追上前车比较费时或者本车无法加速，选择减速拉开距离
-        delta_v = -max(0, 3 + (min(0, 40.0 - d)/40.0) * 3 + v_rel_abs) #减速到比前车慢10~20km/h(40m~0m)
+        delta_v = -max(0, 3 + (max(0, 40.0 - d)/40.0) * 3 + v_rel_abs) #减速到比前车慢10~20km/h(40m~0m)
     else: #前车比自己快
       close_speed = d/2.0 + v_rel #计算需要加速多少才能在2秒内才能追上前车
       if close_speed < 3 and speed_up_enable and not decel_priority: #加速10km/h即可以2秒内追上前车
         delta_v = close_speed*2 + 3
       else:
-        delta_v = -max(0, 3 + (min(0, 40.0 - d) / 40.0) * 3 - v_rel)  # 减速到比前车慢10~20km/h+vrel(40m~0m)
+        delta_v = -max(0, 3 + (max(0, 40.0 - d) / 40.0) * 3 - v_rel)  # 减速到比前车慢10~20km/h+vrel(40m~0m)
     return delta_v
 
   def compute_delta_v_for_rear(self, drel_mm, vrel, v_ego, speed_up_enable, decel_priority):
@@ -704,14 +705,14 @@ class CarrotServ:
       #elif close_time < 3: #3秒后车追上自己，减速10km/h，让后车加速超过自己
       #  delta_v = -3.0
       elif speed_up_enable and not decel_priority: # 加速拉开距离，加速的速度根据距离动态变化
-        delta_v = v_rel + 3 + (min(0, 40.0 - d)/40.0)*3 #加速到比后车快10~20km/h(40m~0m)
+        delta_v = v_rel + 3 + (max(0, 40.0 - d)/40.0)*3 #加速到比后车快10~20km/h(40m~0m)
       else: #不能加速或者减速优先
         delta_v = -3.0
     else: #后车比自己慢
       if not speed_up_enable or decel_priority: #不能加速或者减速优先
         delta_v = v_rel-3.0 if d < 10 else 0 #距离小于10米时减速让后车超过自己
       else:
-        delta_v = max(0, v_rel + 3 + (min(0, 40.0 - d) / 40.0) * 3)  # 加速到比后车快10~20km/h(40m~0m)
+        delta_v = max(0, v_rel + 3 + (max(0, 40.0 - d) / 40.0) * 3)  # 加速到比后车快10~20km/h(40m~0m)
     return delta_v
 
   def compute_delta_v_for_front_rear(self, f_drel_mm, f_vrel, b_drel_mm, b_vrel, v_ego, speed_up_enable, decel_priority):
@@ -1047,7 +1048,7 @@ class CarrotServ:
           self.atc_speed_delta_new = self.bsd_v_ego_kph - v_ego_kph
           self.atc_speed_delta = self.atc_speed_delta_new
 
-        self.bsd_speed_keep_time = min(-1, self.bsd_speed_keep_time - 1) #保持时间计数
+        self.bsd_speed_keep_time = max(-1, self.bsd_speed_keep_time - 1) #保持时间计数
         if self.bsd_speed_keep_time >= 0:
           atc_desired = self.bsd_v_ego_kph + self.atc_speed_delta
           if self.atc_speed_delta > 0:

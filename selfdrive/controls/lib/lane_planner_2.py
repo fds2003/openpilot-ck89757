@@ -90,8 +90,8 @@ class LanePlanner:
 
   def update_two_wheel_avoid(self, obstacle_list):
     """计算两轮车/行人独立避让偏移（移植自 cpv9-corolla lane_planner_2.update_obstacle_data 的 tw 段）。
-    obstacle_list: [(d_long, d_lat, type_str), ...]，d_lat 正=右。
-    右侧同车道(-0.3~1.6m)的两轮车/行人 → 强制向左避让，偏移量随距离加权、限幅、一阶平滑。"""
+    obstacle_list: [(d_long, d_lat, type_str), ...]，d_lat 与 radarState.yRel 一致（正=左，负=右）。
+    右侧同车道(-1.6~0.3m)的两轮车/行人 → 强制向左避让，偏移量随距离加权、限幅、一阶平滑。"""
     _tw_shift = 0.0
     for obs in obstacle_list:
       try:
@@ -103,7 +103,7 @@ class LanePlanner:
       if o_type not in ("motorcycle", "bicycle", "pedestrian"):
         continue
       # 右侧同车道（或贴边）的两轮车/行人 → 强制向左避让
-      if -0.3 < d_lat < 1.6:
+      if -1.6 < d_lat < 0.3:
         dist_w = max(0.0, min(1.0, 1.0 - d_long / TWO_WHEEL_MAX_LONG_DIST))
         _tw_shift = min(_tw_shift + TWO_WHEEL_AVOID_SHIFT * dist_w, TWO_WHEEL_AVOID_SHIFT)
     self.two_wheel_avoid_shift = _tw_shift

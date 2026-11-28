@@ -1268,7 +1268,7 @@ class DesireHelper:
           self.trigger_name = "rear ttc abort"
           self.lane_change_audio(True, 6, 0)
         # 98% certainty
-        if lane_change_prob < 0.02 and self.lane_change_ll_prob < 0.01:
+        elif lane_change_prob < 0.02 and self.lane_change_ll_prob < 0.01:
           self.lane_change_state = LaneChangeState.laneChangeFinishing
         if (self.showDebugLog & 4) > 0 or self.lane_change_state_last != self.lane_change_state:
           print(f"---{'[' + time.strftime('%H:%M:%S') + ']' if self.lane_change_state_last != self.lane_change_state else ''}Starting: ll_prob={self.lane_change_ll_prob:.1f},prob={lane_change_prob:.1f};trig:name={self.trigger_name},type={self.trigger_type}")

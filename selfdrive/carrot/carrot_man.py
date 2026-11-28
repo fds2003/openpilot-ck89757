@@ -901,21 +901,25 @@ class CarrotMan:
 
         if socket in socks and socks[socket] == zmq.POLLIN:
           raw_message = socket.recv(zmq.NOBLOCK)
-          msg_text = raw_message.decode()
           # S-1: HMAC token check before any processing
           try:
+            msg_text = raw_message.decode()
             json_obj = json.loads(msg_text)
-          except json.JSONDecodeError:
-            json_obj = None
-            print(f"Received:7710 malformed JSON, dropping")
-          if json_obj is not None:
-            token = json_obj.pop("_token", None)
-            expected = hmac.new(self._zmq_token.encode(),
-                                 raw_message[:64], "sha256").hexdigest()[:16]
-            if not hmac.compare_digest(str(token), expected):
-              socket.send(json.dumps({"error": "S-1: invalid token"}).encode())
-              continue
-            print(f"Received:7710 request: {msg_text}")
+          except (UnicodeDecodeError, json.JSONDecodeError):
+            print("Received:7710 malformed JSON, dropping")
+            socket.send(json.dumps({"error": "S-1: malformed JSON"}).encode())
+            continue
+          if not isinstance(json_obj, dict):
+            socket.send(json.dumps({"error": "S-1: invalid payload type"}).encode())
+            continue
+          token = json_obj.pop("_token", None)
+          canonical_payload = json.dumps(json_obj, sort_keys=True, separators=(",", ":")).encode()
+          expected = hmac.new(self._zmq_token.encode(),
+                              canonical_payload, "sha256").hexdigest()[:16]
+          if not hmac.compare_digest(str(token), expected):
+            socket.send(json.dumps({"error": "S-1: invalid token"}).encode())
+            continue
+          print(f"Received:7710 request: {msg_text}")
         else:
           json_obj = None
 

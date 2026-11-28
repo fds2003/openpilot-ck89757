@@ -19,7 +19,7 @@ params = Params()
 PARAM_KEY_WHITELIST = {
   "AutoTurnDistOffset", "AutoForkDistOffset", "AutoDoForkBlinkerDist",
   "AutoForkDistOffsetH", "AutoDoForkDecalDistH", "AutoDoForkDecalDist",
-  "AutoDoForkBlinkerDistH", "AutoDoForkNavDistH", "AutoUpRoadLimit",
+  "AutoDoForkBlinkerDistH", "AutoDoForkNavDistH", "AutoDoForkNavDist", "AutoUpRoadLimit",
   "AutoUpRoadLimit40KMH", "AutoUpHighwayRoadLimit", "AutoUpHighwayRoadLimit40KMH",
   "RoadType", "AutoForkDecalRateH", "AutoForkSpeedMinH", "AutoKeepForkSpeedH",
   "AutoForkDecalRate", "AutoForkSpeedMin", "AutoKeepForkSpeed",
@@ -255,7 +255,7 @@ class WebInterface:
             def handle_nav_params(self, data):
                 """处理CP导航参数更新 - 复用UnifiedParams类逻辑"""
                 try:
-                    if not data:
+                    if not isinstance(data, dict) or not data:
                         self.send_json_response({'status': 'error', 'message': '无效的数据'})
                         return
 
@@ -268,7 +268,11 @@ class WebInterface:
                         unified_params._save_system_param()
                         self.send_json_response({'status': 'success', 'message': '参数已恢复默认'})
                     else:
-                        unified_params.nav_data = data
+                        rejected = [k for k in data if k not in PARAM_KEY_WHITELIST]
+                        if rejected:
+                            self.send_json_response({'status': 'error', 'message': f'参数不在白名单内: {rejected}'})
+                            return
+                        unified_params.nav_data.update(data)
                         unified_params._save_nav_data()
                         unified_params._save_system_param()
                         self.send_json_response({'status': 'success', 'message': '参数已保存'})

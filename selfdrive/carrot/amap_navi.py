@@ -419,12 +419,23 @@ class AmapNaviServ:
 
     self.pm.send('amapNavi', msg)
 
-  def left_blindspot(self):
-    return (self.shared_data.left_blind or self.shared_data.lidar_lblind or self.shared_data.left_lane_blind
-            or self.shared_data.lidar_lfblind or self.shared_data.lidar_lbblind)
-  def right_blindspot(self):
-    return (self.shared_data.right_blind or self.shared_data.lidar_rblind or self.shared_data.right_lane_blind
-            or self.shared_data.lidar_rfblind or self.shared_data.lidar_rbblind)
+  def left_blindspot(self, snap=None):
+    if snap is not None:
+      return (snap["left_blind"] or snap["lidar_lblind"] or snap["left_lane_blind"]
+              or snap["lidar_lfblind"] or snap["lidar_lbblind"])
+    with self._lock:
+      sd = self.shared_data
+      return (sd.left_blind or sd.lidar_lblind or sd.left_lane_blind
+              or sd.lidar_lfblind or sd.lidar_lbblind)
+
+  def right_blindspot(self, snap=None):
+    if snap is not None:
+      return (snap["right_blind"] or snap["lidar_rblind"] or snap["right_lane_blind"]
+              or snap["lidar_rfblind"] or snap["lidar_rbblind"])
+    with self._lock:
+      sd = self.shared_data
+      return (sd.right_blind or sd.lidar_rblind or sd.right_lane_blind
+              or sd.lidar_rfblind or sd.lidar_rbblind)
 
   def _capnp_list_to_list(self, capnp_list, max_items=None):
     """将capnp列表转换为Python列表"""
@@ -836,9 +847,9 @@ class AmapNaviServ:
         self.lidar_object_blind()
         self.solid_line_blind()
 
-        #拷贝客户端列表
+        #拷贝客户端列表（逐项浅拷贝，避免锁外超时逻辑直接修改共享子字典）
         with self._lock:
-          _clients = getattr(self, "clients", {}).copy()
+          _clients = {ip: dict(info) for ip, info in getattr(self, "clients", {}).items()}
         _active_clients = list(_clients.keys())
 
         #初始化变量
@@ -849,8 +860,9 @@ class AmapNaviServ:
 
         if _active_clients: #存在有客户端
           # 遍历前清空旧数据
-          for field in ["lb_drel", "rf_drel", "rb_drel", "lf_xrel", "lb_xrel", "rf_xrel", "rb_xrel", ]:
-            getattr(self.shared_data, field).clear()
+          with self._lock:
+            for field in ["lb_drel", "rf_drel", "rb_drel", "lf_xrel", "lb_xrel", "rf_xrel", "rb_xrel", ]:
+              getattr(self.shared_data, field).clear()
 
           left_lidar_id = right_lidar_id = 0
           # ====================遍历所有客户端的盲区状态和更新时间====================
@@ -1757,7 +1769,7 @@ class AmapNaviServ:
       try:
         # 修改: 获取当前活跃客户端
         with self._lock:
-          self.clients_copy = getattr(self, "clients", {}).copy()
+          self.clients_copy = {ip: dict(info) for ip, info in getattr(self, "clients", {}).items()}
           self.active_clients = list(self.clients_copy.keys())
 
         if frame % 20 == 0 or self.active_clients:
@@ -1866,6 +1878,10 @@ class AmapNaviServ:
         "driver_steering": sd.driver_steering,
         "gas_press": sd.gas_press, "break_press": sd.break_press,
         "engaged": sd.engaged,
+        "left_blind": sd.left_blind, "right_blind": sd.right_blind,
+        "lidar_lblind": sd.lidar_lblind, "lidar_rblind": sd.lidar_rblind,
+        "left_lane_blind": sd.left_lane_blind, "right_lane_blind": sd.right_lane_blind,
+        "lidar_lfblind": sd.lidar_lfblind, "lidar_rfblind": sd.lidar_rfblind,
         "left_blindspot": sd.left_blindspot, "right_blindspot": sd.right_blindspot,
         "behind_ttc": sd.behind_ttc,
         "lidar_lbblind": sd.lidar_lbblind, "lidar_rbblind": sd.lidar_rbblind,
@@ -1987,9 +2003,13 @@ class AmapNaviServ:
       if snap["rightFrontBlind"] is not None:
         msg['r_front_blind'] = snap["rightFrontBlind"]
 
-      #雷达和摄像头盲区
-      msg['lidar_lblind'] = self.left_blindspot()
-      msg['lidar_rblind'] = self.right_blindspot()
+      #雷达和摄像头盲区（兼容无参测试桩）
+      try:
+        msg['lidar_lblind'] = self.left_blindspot(snap)
+        msg['lidar_rblind'] = self.right_blindspot(snap)
+      except TypeError:
+        msg['lidar_lblind'] = self.left_blindspot()
+        msg['lidar_rblind'] = self.right_blindspot()
 
       #雷达距离数据
       # Q-6: lb_drel/rb_drel 由下方 M-13 main_* 覆盖逻辑统一负责，
@@ -2044,8 +2064,12 @@ class AmapNaviServ:
         x_spd_type = carrotMan.xSpdType
         x_spd_dist = carrotMan.xSpdDist
         op_blocked = ("none" not in atc_type and "prepare" not in atc_type)
-        self.shared_data.op_blocked = op_blocked
-        self.shared_data.road_blocked = ("隧道" in road_name) or (x_spd_type >= 0 and 0 < x_spd_dist < 500)
+        road_blocked = ("隧道" in road_name) or (x_spd_type >= 0 and 0 < x_spd_dist < 500)
+        with self._lock:
+          self.shared_data.op_blocked = op_blocked
+          self.shared_data.road_blocked = road_blocked
+        snap["op_blocked"] = op_blocked
+        snap["road_blocked"] = road_blocked
 
         # BUG-2：从稳定的 carrotMan.atcType 字符串派生 atc_state，消除对 modelV2.alive
         # 的依赖（modelV2 偶发不 alive 时变道完成确认不再丢失/退化为超时）。
@@ -2182,10 +2206,11 @@ class AmapNaviServ:
       msg['engaged'] = cruise_enable
 
   def make_lidar_message(self):
-    msg, isOnroad, _ = self._build_base_fields()
+    snap = self._shared_snapshot()
+    msg, isOnroad, _ = self._build_base_fields(snap)
 
     if isOnroad:
-      self._apply_cruise_state(msg)
+      self._apply_cruise_state(msg, snap)
 
       if self.sm.alive['carrotMan']:
         carrotMan = self.sm['carrotMan']

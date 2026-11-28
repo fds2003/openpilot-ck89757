@@ -10,6 +10,7 @@ import numpy as np
 #from flask import Flask, Response, render_template_string
 #import cv2
 
+import os
 import sys
 
 FLASK_AVAILABLE = True
@@ -472,7 +473,8 @@ def main():
       return Response(jpeg, mimetype="image/jpeg")
 
     from werkzeug.serving import run_simple
-    run_simple('0.0.0.0', 8888, app, threaded=True, processes=1, use_reloader=False)
+    bind_host = os.environ.get("CARROT_LANE_BIND_HOST", "127.0.0.1")
+    run_simple(bind_host, 8888, app, threaded=True, processes=1, use_reloader=False)
 
 if __name__ == "__main__":
     main()

@@ -404,7 +404,8 @@ class RadarD:
     # 而非原始 track_id/slot。Hyundai 雷达每个 frame 可能复用 slot，
     # 以 slot 为键会让 stable_count 永远无法累积到阈值；
     # 以位置为键则同一物理天桥目标跨帧仍能匹配。
-    self._overpass_tracker = {}  # (round(dRel,1), round(yRel,1)) -> {first_dRel, last_dRel, stable_count, total_frames}
+    self._overpass_tracker = {}  # (round(dRel,1), round(yRel,1)) -> {first_dRel, last_dRel, stable_count, total_frames, last_frame}
+    self._overpass_frame = 0
 
 
   def update(self, sm: messaging.SubMaster, rr: car.RadarData):
@@ -440,6 +441,9 @@ class RadarD:
         self.tracks.pop(tid)
         # OP-01: 追踪器按位置键控；此处无法按位置清理，改为定期老化
         # （位置键在下一帧 update 时若目标不再出现即失效，无需按 tid 删除）
+
+    self._overpass_frame += 1
+    self._prune_overpass_tracker()
 
     # *** publish radarState ***
     self.radar_state_valid = sm.all_checks()
@@ -500,6 +504,15 @@ class RadarD:
     """OP-01: 以位置（而非 slot）作为稳定键。1m 分辨率足够区分不同目标。"""
     return (round(float(drel), 1), round(float(yrel), 1))
 
+  def _prune_overpass_tracker(self, max_age_frames: int = 20):
+    """清理超过 max_age_frames 帧未更新的天桥位置键，防止字典无限增长。"""
+    stale_keys = [
+      k for k, v in self._overpass_tracker.items()
+      if self._overpass_frame - (v.get('last_frame') or 0) > max_age_frames
+    ]
+    for k in stale_keys:
+      del self._overpass_tracker[k]
+
   def _update_overpass_tracker(self, track):
     """OP-01: 按位置键更新天桥检测状态，返回 True 表示确认是天桥。"""
     key = self._lead_position_key(track.dRel, track.yRel)
@@ -525,10 +538,15 @@ class RadarD:
         'last_dRel': drel,
         'stable_count': 0,
         'total_frames': 0,
+        'last_frame': None,
         'tid': getattr(track, 'identifier', None),  # 仅用于日志
       }
 
     info = self._overpass_tracker[key]
+    # 同帧幂等：避免 get_lead 与 compute_leads 在同一帧重复递增计数
+    if info.get('last_frame') == self._overpass_frame:
+      return info['stable_count'] >= 5
+    info['last_frame'] = self._overpass_frame
     info['total_frames'] += 1
 
     # 距离变化小于 0.5m → 稳定
