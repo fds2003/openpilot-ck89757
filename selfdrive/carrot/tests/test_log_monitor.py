@@ -82,6 +82,43 @@ class TestLogMonitor(unittest.TestCase):
     self.assertIn("'/logs'", text)
     self.assertIn("get_error_summary", text)
 
+  def test_public_readonly_log_http_server(self):
+    import threading
+    import urllib.error
+    import urllib.request
+    try:
+      from openpilot.selfdrive.carrot.log_monitor import make_log_http_server
+    except ImportError:
+      from selfdrive.carrot.log_monitor import make_log_http_server
+
+    with tempfile.TemporaryDirectory() as tmp:
+      srv = make_log_http_server(host="127.0.0.1", port=0, log_dir=tmp)
+      port = srv.server_address[1]
+      t = threading.Thread(target=srv.serve_forever, daemon=True)
+      t.start()
+      try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/logs", timeout=2) as resp:
+          self.assertEqual(resp.status, 200)
+          body = json.loads(resp.read().decode("utf-8"))
+          self.assertEqual(body["total_errors"], 0)
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=2) as resp:
+          self.assertEqual(resp.status, 200)
+          html = resp.read().decode("utf-8")
+          self.assertIn("C3", html)
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/logs", data=b"{}", method="POST")
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+          urllib.request.urlopen(req, timeout=2)
+        self.assertEqual(ctx.exception.code, 405)
+      finally:
+        srv.shutdown()
+        srv.server_close()
+
+  def test_carrot_man_starts_readonly_log_server(self):
+    carrot_man = os.path.join(ROOT, "selfdrive", "carrot", "carrot_man.py")
+    with open(carrot_man, encoding="utf-8") as f:
+      text = f.read()
+    self.assertIn("start_log_http_server", text)
+
 
 if __name__ == "__main__":
   unittest.main()

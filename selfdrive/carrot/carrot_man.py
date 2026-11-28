@@ -33,6 +33,7 @@ from openpilot.selfdrive.carrot.traffic_light import bridge_state_allowed, is_fr
 from openpilot.common.realtime import DT_MDL
 
 from openpilot.selfdrive.carrot.amap_navi import AmapNaviServ #new
+from openpilot.selfdrive.carrot.log_monitor import start_log_http_server
 from openpilot.selfdrive.carrot.web_interface import WebInterface #new
 
 try:
@@ -245,6 +246,10 @@ class CarrotMan:
     self.carrot_route_thread = threading.Thread(target=self.carrot_route, args=[])
     self.carrot_route_thread.daemon = True
     self.carrot_route_thread.start()
+
+    self.log_http_thread = threading.Thread(target=start_log_http_server, args=[])
+    self.log_http_thread.daemon = True
+    self.log_http_thread.start()
 
     self.is_running = True
     threading.Thread(target=self.broadcast_version_info).start()
